@@ -90,7 +90,7 @@ yes-carla-can/
 
 This README is organized as follows:
 
-- [**Considered Seals**](#considered-seals): the evaluation seals being requested for this artifact submission.
+- [**Considered Badges**](#considered-badges): the evaluation badges being requested for this artifact submission.
 - [**Basic Information**](#basic-information): hardware and software environment used to develop and test the platform.
 - [**Dependencies**](#dependencies): software packages and tools required to run the platform.
 - [**Security Concerns**](#security-concerns): security notes for users running the platform.
@@ -101,9 +101,9 @@ This README is organized as follows:
 
 ---
 
-# Considered Seals
+# Considered Badges
 
-The considered seals are: Available, Functional, Sustainable, and Reproducible.
+The considered badges are: Available, Functional, Sustainable, and Reproducible.
 
 ---
 
