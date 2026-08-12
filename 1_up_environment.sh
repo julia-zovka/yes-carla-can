@@ -83,7 +83,7 @@ fi
 
 # Start CARLA simulator in the background
 echo "Starting CARLA simulator..."
-./${CARLA_FOLDER_NAME}/CarlaUE4.sh -RenderOffScreen -quality_level=Low -nosound 2>/dev/null &
+./${CARLA_FOLDER_NAME}/CarlaUE4.sh -RenderOffScreen -quality-level=Low -nosound 2>/dev/null &
 
 echo "Setting up AVTP virtual network..."
 sudo bash -c "source ${AVTP_DIR}/.venv/bin/activate && bash ${AVTP_DIR}/setup.sh --capture"
