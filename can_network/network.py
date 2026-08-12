@@ -94,7 +94,9 @@ class CAN_Network(object):
         self.bus.send(self._build_msg("MANUAL_TRANSMISSION", int(controls.manual_gear_shift)))
 
     def send_gear_msg(self, controls):
-        self.bus.send(self._build_msg("GEAR", int(controls.gear)))
+        # Se o CARLA enviar -1 (Ré), convertemos para 0 (Neutro/Ré no DBC)
+        gear_val = max(0, int(controls.gear))
+        self.bus.send(self._build_msg("GEAR", gear_val))
 
     def send_autopilot_msg(self, controls):
         # controls.autopilot is not a standard VehicleControl field;
