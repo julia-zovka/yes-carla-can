@@ -97,3 +97,4 @@ setuptools
 scapy>=2.5.0
 
 torch>=2
+ultralytics

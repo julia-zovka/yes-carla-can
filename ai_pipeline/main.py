@@ -1,8 +1,11 @@
+
+
 import queue
 import threading
-from receiver import start_avtp_listener
-from ai_agent import run_inference_loop
-from actuator import execute_control
+from ai_pipeline.receiver import start_avtp_listener
+from ai_pipeline.ai_agent import run_inference_loop
+from ai_pipeline.actuator import execute_control
+
 
 if __name__ == "__main__":
     # Fila de tamanho 1 para priorizar frames em tempo real
