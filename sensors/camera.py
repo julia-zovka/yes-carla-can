@@ -3,6 +3,7 @@ import sys
 import time
 import weakref
 import socket
+import struct
 
 import numpy as np
 import pygame
@@ -17,6 +18,63 @@ if PATH_AVTP not in sys.path:
 import cv2
 import avtp as avtp_lib
 from scapy.all import sendp, get_if_hwaddr
+
+class MPEGTSStreamEncoder:
+    """
+    Encoder simplificado e ultra-rápido de MPEG-TS (ISO/IEC 13818-1) para AVTP.
+    Empacota imagens em blocos de 192 bytes:
+      - 4 bytes: Source Packet Header (SPH Timestamp)
+      - 188 bytes: MPEG-TS Packet (Sync byte 0x47 + Header + Payload)
+    """
+    def __init__(self, pid=0x18):
+        self.pid = pid
+        self.continuity_counter = 0
+
+    def encode_frame_to_ts_blocks(self, bgra_array, quality=50):
+        # 1. Comprime o frame para reduzir tamanho
+        success, encoded_img = cv2.imencode(".jpg", bgra_array, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        if not success:
+            return b""
+        
+        payload_data = encoded_img.tobytes()
+        
+        # 2. Divide em blocos de payload MPEG-TS (184 bytes de dados por pacote TS)
+        ts_blocks = []
+        sph_timestamp = int((time.time() * 1000000)) & 0xFFFFFFFF  # Timestamp em microsegundos
+        
+        chunk_size = 184
+        for i in range(0, len(payload_data), chunk_size):
+            chunk = payload_data[i:i + chunk_size]
+            if len(chunk) < chunk_size:
+                chunk = chunk.ljust(chunk_size, b"\x00")  # Padding com zeros até 184B
+            
+            # Cabeçalho MPEG-TS (4 Bytes):
+            # Byte 0: 0x47 (Sync Byte obrigatório ISO 13818-1)
+            # Bytes 1-2: Flags + PID (0x18)
+            # Byte 3: 0x10 (Payload only) | Continuity Counter (0..15)
+            # 0x00 representa as flags (ou 0x40 se for o início de uma unidade PES)
+            pusi_flag = 0x40 if i == 0 else 0x00
+            byte1 = pusi_flag | ((self.pid >> 8) & 0x1F)
+
+            ts_header = struct.pack(
+                "!BBBB",
+                0x47,
+                byte1,
+                self.pid & 0xFF,
+                0x10 | (self.continuity_counter & 0x0F),
+            )
+
+            self.continuity_counter = (self.continuity_counter + 1) & 0x0F
+            
+            ts_packet_188 = ts_header + chunk  # 188 Bytes
+            
+            # Cabeçalho SPH Timestamp de 4 Bytes do IEC 61883-4
+            sph_header = struct.pack("!I", sph_timestamp)
+            
+            # Bloco final da IEC 61883-4 = 192 Bytes
+            ts_blocks.append(sph_header + ts_packet_188)
+            
+        return b"".join(ts_blocks)
 
 
 class RGBCameraSensor(object):
@@ -70,7 +128,7 @@ class RGBCameraSensor(object):
         # ── Configurações de Rede AVTP ───────────────────────────────────────
         self.interface = interface
         self.stream_id = int(stream_id, 16)
-
+        self.ts_encoder = MPEGTSStreamEncoder(pid=0x18)  # 24 muah
 
         try:
             self.src_mac = get_if_hwaddr(self.interface)
@@ -163,16 +221,11 @@ class RGBCameraSensor(object):
         
 
 
-    # ------------------------------------------------------------------
-    # Rendering
-
     def render(self, display, pos=(0, 0)):
-        """Blit the latest camera frame onto *display* at *pos* (top-left)."""
+        """Exibe a imagem na tela do Pygame."""
         if self.surface is not None:
             display.blit(self.surface, pos)
 
-    # ------------------------------------------------------------------
-    # Internal callback
 
     @staticmethod
     def _on_image(weak_self, image):
@@ -193,8 +246,6 @@ class RGBCameraSensor(object):
             # Pega os 3 canais e inverte BGR para RGB (::-1)
             rgb_array = array[:, :, :3][:, :, ::-1]
             self.array = rgb_array
-
-
             try:
                 # Transpõe para o formato que a superfície do Pygame espera (Largura, Altura, 3)
                 self.surface = pygame.surfarray.make_surface(rgb_array.swapaxes(0, 1))
@@ -202,46 +253,62 @@ class RGBCameraSensor(object):
                 pass
 
 
-                
-        # ── Codificação e Envio AVTP (Substitui a leitura de arquivo do sender antigo)
-        # Transmissão em Tempo Real via AVTP
-        # Converte o frame em JPEG compactado diretamente em RAM (Qualidade 60%)
-        success, buffer = cv2.imencode(".jpg", bgra_array, [cv2.IMWRITE_JPEG_QUALITY, 60])
-        if not success:
+        # Codifica para o Padrão MPEG-TS ISO/IEC 13818-1 (Blocos de 192 Bytes)
+        ts_stream_bytes = self.ts_encoder.encode_frame_to_ts_blocks(bgra_array, quality=50)
+        if not ts_stream_bytes:
             return
-        
-        image_bytes = buffer.tobytes()
+
+        #Fragmenta o Stream MPEG-TS em Pacotes AVTP
+        # Cada pacote AVTP vai conter 2 blocos de 192 bytes = 384 bytes de payload
         frame_num = self.frames_sent & 0xFFFF
 
-        # Fragmenta em pacotes AVTP
-        packets = avtp_lib.fragment_image(
-            image_bytes=image_bytes,
-            stream_id=self.stream_id,
-            frame_num=frame_num,
-            seq_counter=self.seq_counter,
-            src_mac=self.src_mac,
-        )
 
-        # Envia os fragmentos pela interface de rede especificada
-        if self.sock:
-            for pkt in packets:
-                # Converte o objeto Scapy Packet em bytes puros do cabo Ethernet
-                self.sock.send(bytes(pkt))
-        else:
-            from scapy.all import sendp
-            sendp(packets, iface=self.interface, verbose=0)
 
+        # Fragmenta o Stream MPEG-TS em Pacotes AVTP
+        try:
+            packets = avtp_lib.fragment_mpegts_stream(
+                ts_bytes=ts_stream_bytes,
+                stream_id=self.stream_id,
+                seq_counter=self.seq_counter,
+                src_mac=self.src_mac,
+                blocks_per_pkt=2
+            )
+        except Exception as err:
+            print(f"[!] Erro ao fragmentar MPEG-TS no avtp_lib: {err}")
+            return
+
+        if not packets:
+            print("[!] AVISO: 'packets' retornou VAZIO do fragment_mpegts_stream!")
+            return
+
+        # Envia os fragmentos
+        sent_count = 0
+        try:
+            if self.sock:
+                for pkt in packets:
+                    # Converte para bytes se for pacote Scapy, ou usa diretamente se já for bytes
+                    pkt_bytes = bytes(pkt) if not isinstance(pkt, bytes) else pkt
+                    self.sock.send(pkt_bytes)
+                    sent_count += 1
+            else:
+                sendp(packets, iface=self.interface, verbose=0)
+                sent_count = len(packets)
+        except Exception as err:
+            print(f"[!] Erro no socket.send: {err}")
+            return
+
+            
 
         # Atualiza os contadores internos
         self.seq_counter = (self.seq_counter + len(packets)) & 0xFF
         self.frames_sent += 1
-        self.bytes_sent += len(image_bytes)
+        self.bytes_sent += len(ts_stream_bytes)
         self.pkts_sent += len(packets)
 
         elapsed = time.time() - self.start_time
         print(
-            f"  [TX] Frame {self.frames_sent:>5}"
-            f"  {len(image_bytes):>7} B"
+            f"  [TX MPEG-TS] Frame {self.frames_sent:>5}"
+            f"  {len(ts_stream_bytes):>7} B"
             f"  {len(packets):>3} pkts"
             f"  seq {frame_num:>5}"
             f"  elapsed {elapsed:>7.1f}s"
