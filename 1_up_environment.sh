@@ -5,7 +5,7 @@ CONDA_ENV_NAME="${CONDA_ENV_NAME:-n4s_env}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DBC_PATH="${DBC_PATH:-data/carla.dbc}"
 VCAN_INTERFACE="${VCAN_INTERFACE:-vcan0}"
-AVTP_DIR="/home/ju/virtual-avtp-network"
+AVTP_DIR="/home/liveuser05/yes-carla-can/virtual-avtp-network"
 
 usage() {
     cat <<EOF

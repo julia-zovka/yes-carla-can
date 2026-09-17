@@ -10,7 +10,7 @@ import pygame
 import carla
 
 
-PATH_AVTP = "/home/ju/virtual-avtp-network"  # Coloque o caminho absoluto da sua pasta do AVTP aqui
+PATH_AVTP = "/home/liveuser05/yes-carla-can/virtual-avtp-network"  # Coloque o caminho absoluto da sua pasta do AVTP aqui
 if PATH_AVTP not in sys.path:
     sys.path.append(PATH_AVTP)
 
