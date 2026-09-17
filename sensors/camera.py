@@ -4,102 +4,97 @@ import time
 import weakref
 import socket
 import struct
+import io
+
 
 import numpy as np
 import pygame
 import carla
-
+import av
 
 PATH_AVTP = "/home/ju/virtual-avtp-network"  # Coloque o caminho absoluto da sua pasta do AVTP aqui
 if PATH_AVTP not in sys.path:
     sys.path.append(PATH_AVTP)
 
 
-import cv2
 import avtp as avtp_lib
 from scapy.all import sendp, get_if_hwaddr
 
 class MPEGTSStreamEncoder:
     """
-    Encoder simplificado e ultra-rápido de MPEG-TS (ISO/IEC 13818-1) para AVTP.
-    Empacota imagens em blocos de 192 bytes:
-      - 4 bytes: Source Packet Header (SPH Timestamp)
-      - 188 bytes: MPEG-TS Packet (Sync byte 0x47 + Header + Payload)
+    Encoder MPEG-TS profissional baseado no FFmpeg (PyAV) para AVTP IEC 61883-4.
+    Converte frames de imagens em um fluxo de vídeo H.264 empacotado em 
+    blocos MPEG-TS de 192 bytes (4B SPH Timestamp + 188B TS Packet).
     """
-    def __init__(self, pid=0x18):
+    def __init__(self, width=470, height=200, fps=30, pid=0x18):
+        self.width = width
+        self.height = height
+        self.fps = fps
         self.pid = pid
-        self.continuity_counter = 0
 
-    def encode_frame_to_ts_blocks(self, bgra_array, quality=50):
-        # 1. Comprime o frame para reduzir tamanho
-        success, encoded_img = cv2.imencode(".jpg", bgra_array, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        if not success:
+        # Prepara o container de saída em memória (MPEG-TS)
+        self.output_buffer = io.BytesIO()
+        self.container = av.open(self.output_buffer, mode="w", format="mpegts")
+
+        # Cria a stream de vídeo H.264 dentro do MPEG-TS
+        self.stream = self.container.add_stream("h264", rate=self.fps)
+        self.stream.width = self.width
+        self.stream.height = self.height
+        self.stream.pix_fmt = "yuv420p"
+        
+        # Opções de baixíssima latência (cruciais para tempo real/câmera)
+        self.stream.options = {
+            "tune": "zerolatency",
+            "preset": "ultrafast",
+            "g": "5"  # Gera GOP curto (Keyframe a cada 5 frames)
+        }
+
+        self.pts_counter = 0
+
+    def encode_frame_to_ts_blocks(self, bgra_array):
+        """
+        Recebe a matriz BGRA (H, W, 4) do CARLA, codifica via FFmpeg e 
+        retorna os blocos de 192 bytes prontos para o AVTP.
+        """
+        # 1. Converte a matriz BGRA para RGB (elimina o canal Alpha)
+        rgb_array = bgra_array[:, :, :3][:, :, ::-1]
+
+        # 2. Cria o Frame do PyAV
+        frame = av.VideoFrame.from_ndarray(rgb_array, format="rgb24")
+        frame.pts = self.pts_counter
+        self.pts_counter += 1
+
+        # Limpa o buffer de memória antes da nova codificação
+        self.output_buffer.seek(0)
+        self.output_buffer.truncate(0)
+
+        # 3. Codifica o frame com o FFmpeg
+        for packet in self.stream.encode(frame):
+            self.container.mux(packet)
+
+        raw_ts_bytes = self.output_buffer.getvalue()
+        if not raw_ts_bytes:
             return b""
-        
-        payload_data = encoded_img.tobytes()
-        
-        # 2. Divide em blocos de payload MPEG-TS (184 bytes de dados por pacote TS)
+
+        # 4. Fatiamento em blocos IEC 61883-4 (192 Bytes = 4B SPH + 188B TS Packet)
         ts_blocks = []
-        sph_timestamp = int((time.time() * 1000000)) & 0xFFFFFFFF  # Timestamp em microsegundos
-        
-        chunk_size = 184
-        for i in range(0, len(payload_data), chunk_size):
-            chunk = payload_data[i:i + chunk_size]
-            if len(chunk) < chunk_size:
-                chunk = chunk.ljust(chunk_size, b"\x00")  # Padding com zeros até 184B
-            
-            # Cabeçalho MPEG-TS (4 Bytes):
-            # Byte 0: 0x47 (Sync Byte obrigatório ISO 13818-1)
-            # Bytes 1-2: Flags + PID (0x18)
-            # Byte 3: 0x10 (Payload only) | Continuity Counter (0..15)
-            # 0x00 representa as flags (ou 0x40 se for o início de uma unidade PES)
-            pusi_flag = 0x40 if i == 0 else 0x00
-            byte1 = pusi_flag | ((self.pid >> 8) & 0x1F)
+        sph_timestamp = int(time.time() * 1000000) & 0xFFFFFFFF  # Microsegundos
 
-            ts_header = struct.pack(
-                "!BBBB",
-                0x47,
-                byte1,
-                self.pid & 0xFF,
-                0x10 | (self.continuity_counter & 0x0F),
-            )
+        # Garante que os pacotes TS de 188 bytes recebam o SPH Header de 4 bytes
+        for i in range(0, len(raw_ts_bytes), 188):
+            ts_pkt_188 = raw_ts_bytes[i:i + 188]
+            if len(ts_pkt_188) == 188:
+                sph_header = struct.pack("!I", sph_timestamp)
+                ts_blocks.append(sph_header + ts_pkt_188)
 
-            self.continuity_counter = (self.continuity_counter + 1) & 0x0F
-            
-            ts_packet_188 = ts_header + chunk  # 188 Bytes
-            
-            # Cabeçalho SPH Timestamp de 4 Bytes do IEC 61883-4
-            sph_header = struct.pack("!I", sph_timestamp)
-            
-            # Bloco final da IEC 61883-4 = 192 Bytes
-            ts_blocks.append(sph_header + ts_packet_188)
-            
         return b"".join(ts_blocks)
+
 
 
 class RGBCameraSensor(object):
     """
     Dedicated front-facing RGB camera sensor.
 
-    Stores the latest frame both as a pygame Surface (for on-screen display)
-    and as a raw numpy array (for data export / ML pipelines).
-
-    ── How to access the camera data ──────────────────────────────────────────
-
-    From anywhere that holds a reference to this sensor object:
-
-        # Latest frame as a numpy uint8 array shaped (H, W, 3) in RGB order
-        frame_rgb = world.rgb_camera_sensor.array
-
-        # Save the current frame to a PNG file (requires Pillow):
-        from PIL import Image
-        img = Image.fromarray(frame_rgb)
-        img.save("frame.png")
-
-        # Or use OpenCV:
-        import cv2
-        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-        cv2.imwrite("frame.png", frame_bgr)
 
     To export every frame automatically, set ``recording = True`` on the
     sensor instance.  Frames will be saved under the ``_out/camera/``
@@ -113,8 +108,8 @@ class RGBCameraSensor(object):
 
     # Resolution of the camera (pixels).  Must match or be smaller than the
     # pygame display so the PiP overlay fits on screen.
-    IMAGE_WIDTH = 640
-    IMAGE_HEIGHT = 360
+    IMAGE_WIDTH = 470
+    IMAGE_HEIGHT = 200
 
     def __init__(self, parent_actor, gamma_correction=2.2, stream_id="0xAABBCCDDEEFF0001", interface="veth-s"):
         self.sensor = None
@@ -128,7 +123,7 @@ class RGBCameraSensor(object):
         # ── Configurações de Rede AVTP ───────────────────────────────────────
         self.interface = interface
         self.stream_id = int(stream_id, 16)
-        self.ts_encoder = MPEGTSStreamEncoder(pid=0x18)  # 24 muah
+        self.ts_encoder = MPEGTSStreamEncoder(width=self.IMAGE_WIDTH,height=self.IMAGE_HEIGHT,fps=30,pid=0x18) # 24 muah
 
         try:
             self.src_mac = get_if_hwaddr(self.interface)
@@ -254,7 +249,7 @@ class RGBCameraSensor(object):
 
 
         # Codifica para o Padrão MPEG-TS ISO/IEC 13818-1 (Blocos de 192 Bytes)
-        ts_stream_bytes = self.ts_encoder.encode_frame_to_ts_blocks(bgra_array, quality=50)
+        ts_stream_bytes = self.ts_encoder.encode_frame_to_ts_blocks(bgra_array)
         if not ts_stream_bytes:
             return
 
