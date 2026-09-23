@@ -11,6 +11,7 @@ Options
     --output-dir    Directory to save received frames  (optional)
     --timeout       Stop after N seconds of silence    (default: off)
 """
+from __future__ import annotations
 
 import argparse
 import signal
@@ -19,6 +20,7 @@ import subprocess
 from pathlib import Path
 import socket
 import sys
+from typing import Optional
 
 import avtp as avtp_lib
 
@@ -33,42 +35,35 @@ def parse_args():
     parser.add_argument("-t", "--timeout", type=float, default=None, help="Stop sniffing after this many seconds of inactivity (optional)")
     return parser.parse_args()
 
-def parse_mpegts_stream_packet(raw_pkt: bytes) -> bytes | None:
-    """
-    Extrai e limpa os 2 blocos MPEG-TS (188 bytes cada = 376 bytes) contidos no 
-    pacote AVTP nativo, removendo Ethernet, AVTP, 1394, CIP e o cabeçalho SPH 
-    (5 bytes) de cada bloco.
 
-    Mapeamento de Offsets:
-      - 00..13 (14B): Ethernet Header
-      - 14..35 (22B): AVTP Header (Sequence Number no index 16)
-      - 36..37 ( 2B): 1394 Header
-      - 38..45 ( 8B): CIP Header (IEC 61883-4)
-      - 46..50 ( 5B): SPH Bloco 1 -> Offset 51: Byte Sync 0x47 (188B TS)
-      - 238..242 (5B): SPH Bloco 2 -> Offset 243: Byte Sync 0x47 (188B TS)
+def parse_mpegts_stream_packet(raw_pkt: bytes) -> Optional[bytes]:
     """
-    # Tamanho mínimo do pacote de rede: 14 + 22 + 2 + 8 + (2 * 192) = 430 bytes
-    if len(raw_pkt) < 430:
+    Extrai blocos MPEG-TS válidos (múltiplos de 188B iniciados com 0x47)
+    do pacote Ethernet/AVTP bruto.
+    """
+    # 1. Valida tamanho mínimo: Ethernet (14B) + AVTP (12B) = 26B
+    if not isinstance(raw_pkt, bytes) or len(raw_pkt) < 26:
         return None
 
-    # Offset base após Ethernet + AVTP + 1394 + CIP = 46 bytes
-    BASE_PAYLOAD_OFFSET = 46
+    # Descarta cabeçalho L2/AVTP
+    raw_payload = raw_pkt[26:]
+    if len(raw_payload) < 188:
+        return None
 
-    # Bloco 1 (192B): Pula 5B de SPH (46..50) -> pega 188B TS (51..238)
-    block1 = raw_pkt[BASE_PAYLOAD_OFFSET + 5 : BASE_PAYLOAD_OFFSET + 193]
+    extracted_ts = bytearray()
+    idx = 0
+    payload_len = len(raw_payload)
 
-    # Bloco 2 (192B): Pula 5B de SPH (238..242) -> pega 188B TS (243..430)
-    block2 = raw_pkt[BASE_PAYLOAD_OFFSET + 197 : BASE_PAYLOAD_OFFSET + 385]
+    # Varre o payload procurando blocos de 188 bytes iniciados por 0x47
+    while idx <= payload_len - 188:
+        if raw_payload[idx] == 0x47:
+            # Encontrou o Sync Byte 0x47! Copia exatamente 188 bytes
+            extracted_ts.extend(raw_payload[idx : idx + 188])
+            idx += 188  # Salta para o próximo bloco potencial
+        else:
+            idx += 1  # Avança byte a byte até achar o alinhamento 0x47
 
-    # Valida se ambos os blocos começam rigorosamente com o Sync Byte MPEG-TS (0x47)
-    if block1.startswith(b"\x47") and block2.startswith(b"\x47"):
-        return block1 + block2  # Retorna exatamente 376 bytes
-
-    # Fallback: Se apenas o primeiro bloco for válido
-    if block1.startswith(b"\x47") and len(block1) == 188:
-        return block1
-
-    return None
+    return bytes(extracted_ts) if extracted_ts else None
 
 # ── Receiver state ────────────────────────────────────────────────────────────
 
@@ -88,7 +83,7 @@ class ReceiverState:
         #IEC 61883-4 Annex A De-Jitter Buffer (3264 bytes)---> reduzido para baixar a latencia na veth
         self.jitter_buffer = bytearray()
         self.is_buffered = False
-        self.JITTER_BUFFER_SIZE = 725
+        self.JITTER_BUFFER_SIZE = 3264 
         
         self.out_file = None
         if output_dir:
@@ -116,7 +111,7 @@ class ReceiverState:
             ffplay_cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=None,
             bufsize=0
         )
 
@@ -129,7 +124,8 @@ class ReceiverState:
 
 
     def handle_packet(self, raw_pkt: bytes):
-        if len(raw_pkt) < 430:
+        # Validação do tamanho mínimo real do pacote L2 (Ethernet 14B + AVTP 12B)
+        if len(raw_pkt) < 26:
             return
 
         # 1. Checagem de Perda de Pacotes pelo Sequence Number (Byte index 16)
@@ -173,7 +169,7 @@ class ReceiverState:
                     self.ffplay_proc.stdin.flush()
             except (BrokenPipeError, OSError):
                 pass
-                
+             
         
         # Log a cada 100 pacotes recebidos
         if self.packets_received % 100 == 0:
@@ -219,14 +215,13 @@ def run(args):
     print(f"  Output dir: {args.output_dir or '(diretório atual)'}")
     print(f"  Timeout   : {args.timeout or 'none'}")
     print("=" * 65)
-    print("  Listening for AVTP MPEG-TS stream... (Ctrl-C to quit)")
     print()
 
 
    # Criar Socket RAW nativo do Linux focado no EtherType AVTP (0x22F0)
     try:
         sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(AVTP_ETHERTYPE))
-        sock.bind((args.interface, socket.htons(AVTP_ETHERTYPE)))
+        sock.bind((args.interface, AVTP_ETHERTYPE))
         # Expande o buffer de recepção no kernel para 16MB para evitar perdas
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
     except Exception as e:
