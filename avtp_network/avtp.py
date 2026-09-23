@@ -173,34 +173,3 @@ def fragment_mpegts_stream(
     return packets
 
 
-def parse_mpegts_stream_packet(packet) -> bytes | None:
-    """
-    Extrai e limpa os 2 pacotes MPEG-TS (188B cada) contidos no payload AVTP,
-    removendo os cabeçalhos 1394, CIP e os 5 bytes de SPH de cada bloco.
-    """
-    if not packet.haslayer(AVTP):
-        return None
-    
-    raw_payload = bytes(packet[AVTP].payload)
-    
-    # 2B (1394) + 8B (CIP) + 384B (2x 192B SPH+TS) = 394 Bytes
-    if len(raw_payload) < 394:
-        return None
-
-    # Pula os 10 bytes de cabeçalhos de rede (2B 1394 + 8B CIP)
-    ts_payload = raw_payload[10:]
-
-    # Bloco 1 (192 bytes): Pula os 5 bytes de SPH e pega 188 bytes TS
-    block1 = ts_payload[5:193]
-    
-    # Bloco 2 (192 bytes): Pula os 5 bytes de SPH do segundo bloco e pega 188 bytes TS
-    block2 = ts_payload[197:385]
-
-    # Valida se ambos os blocos extraídos começam de fato com o byte de sincronia 0x47
-    if block1.startswith(b"\x47") and block2.startswith(b"\x47"):
-        return block1 + block2  # Retorna exatamente 376 bytes (2 x 188 bytes)
-    
-    # Fallback dinâmico simples se o primeiro bloco for válido
-    if block1.startswith(b"\x47") and len(block1) == 188:
-        return block1
-    return None
