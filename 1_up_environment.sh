@@ -5,7 +5,7 @@ CONDA_ENV_NAME="${CONDA_ENV_NAME:-n4s_env}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DBC_PATH="${DBC_PATH:-data/carla.dbc}"
 VCAN_INTERFACE="${VCAN_INTERFACE:-vcan0}"
-AVTP_DIR="/home/ju/virtual-avtp-network"
+AVTP_DIR="${SCRIPT_DIR}/avtp_network"
 
 usage() {
     cat <<EOF
@@ -47,7 +47,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-
+# Exporta o diretório do projeto para o PYTHONPATH (preservado pelo sudo -E)---- para evitar problemas com importaco de modulos
+export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}"
 
 # Resolve Conda Python binary dynamically (no hardcoded user paths)
 if [[ -n "${CONDA_PREFIX}" && "${CONDA_DEFAULT_ENV}" == "${CONDA_ENV_NAME}" ]]; then
@@ -86,13 +87,7 @@ echo "Starting CARLA simulator..."
 ./${CARLA_FOLDER_NAME}/CarlaUE4.sh -RenderOffScreen -quality-level=Low -nosound 2>/dev/null &
 
 echo "Setting up AVTP virtual network..."
-sudo bash -c "source ${AVTP_DIR}/.venv/bin/activate && bash ${AVTP_DIR}/setup.sh --capture"
-
-
-echo "Connecting AVTP veth-s to Host..."
-sudo ip netns exec sender ip link set veth-s netns 1 2>/dev/null || true
-sudo ip link set dev veth-s up
-
+sudo bash "${AVTP_DIR}/setup.sh --capture"
 
 
 # Set up virtual CAN bus
@@ -117,9 +112,14 @@ sudo cangw -A -s "${VCAN_INTERFACE}" -d vcan1 -e 2>/dev/null || true
 echo "Waiting for CARLA to start..."
 sleep 5
 
-# Executa os módulos Python no Host com privilégios para o Scapy
-echo "Starting CARLA client module..."
-sudo "${PYTHON_EXEC}" "${SCRIPT_DIR}/CARLA_client_module.py" --vcan "${VCAN_INTERFACE}" &
+#echo "Starting CARLA client module..."
+#sudo "${PYTHON_EXEC}" "${SCRIPT_DIR}/CARLA_client_module.py" --vcan "${VCAN_INTERFACE}" &
+
+
+# 6. Iniciar o CARLA Client no namespace 'sender' (para acesso à interface veth-s)
+echo "Starting CARLA client module in namespace 'sender'..."
+sudo -E ip netns exec sender "${PYTHON_EXEC}" "${SCRIPT_DIR}/CARLA_client_module.py" --vcan "${VCAN_INTERFACE}" &
+
 
 echo "Starting vehicle controls module..."
 sudo "${PYTHON_EXEC}" "${SCRIPT_DIR}/vehicle_controls_module.py" --dbc "${DBC_PATH}" --vcan "${VCAN_INTERFACE}" &
