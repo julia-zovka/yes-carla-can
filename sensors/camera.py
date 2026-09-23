@@ -42,21 +42,20 @@ class MPEGTSStreamEncoder:
             options={"mpegts_flags": "resend_headers"}
         )
 
-        # 3. Cria a stream H.264 uma única vez
-        self.stream = self.container.add_stream("h264", rate=self.fps)
-        self.stream.width = self.width
-        self.stream.height = self.height
-        self.stream.pix_fmt = "yuv420p"
 
         # 4. Configurações de ultra-baixa latência
-        self.stream.options = {
-            "flags": "+global_header",
+        codec_options = {
             "tune": "zerolatency",
             "preset": "ultrafast",
             "g": "5",  # Keyframe (I-frame) a cada 5 frames para recuperação rápida
             "x264-params": "repeat-headers=1:aud=1"  # Força injeção de SPS/PPS
         }
 
+        # 3. Cria a stream H.264 uma única vez
+        self.stream = self.container.add_stream("h264", rate=self.fps, options=codec_options)
+        self.stream.width = self.width
+        self.stream.height = self.height
+        self.stream.pix_fmt = "yuv420p"
 
     def encode_frame_to_ts_blocks(self, bgra_array):
         """
