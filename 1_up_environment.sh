@@ -87,7 +87,7 @@ echo "Starting CARLA simulator..."
 ./${CARLA_FOLDER_NAME}/CarlaUE4.sh -RenderOffScreen -quality-level=Low -nosound 2>/dev/null &
 
 echo "Setting up AVTP virtual network..."
-sudo bash "${AVTP_DIR}/setup.sh --capture"
+sudo bash "${AVTP_DIR}/setup.sh" --capture
 
 
 # Set up virtual CAN bus
