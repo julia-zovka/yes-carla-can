@@ -20,7 +20,6 @@ from pathlib import Path
 import socket
 import sys
 
-from scapy.all import sniff
 import avtp as avtp_lib
 
 
@@ -86,10 +85,10 @@ class ReceiverState:
         self.last_sequence_num = None
         self.packets_lost = 0
 
-        #IEC 61883-4 Annex A De-Jitter Buffer (3264 bytes)
+        #IEC 61883-4 Annex A De-Jitter Buffer (3264 bytes)---> reduzido para baixar a latencia na veth
         self.jitter_buffer = bytearray()
         self.is_buffered = False
-        self.JITTER_BUFFER_SIZE = 3264
+        self.JITTER_BUFFER_SIZE = 725
         
         self.out_file = None
         if output_dir:
@@ -104,10 +103,10 @@ class ReceiverState:
             "-window_title", "AVTP Live Stream (FFplay)",
             "-probesize", "32000",          # Reduz latência inicial de leitura
             "-analyzeduration", "0",        # Inicia a reprodução imediatamente
-            "-fflags", "nobuffer",          # Minimiza o atraso (buffering) do vídeo ao vivo
-            "-flags", "low_delay",       # Força decodificação de baixa latência
-            "-framedrop",                # Descarta quadros atrasados para não travar a GUI
-            "-sync", "ext",              # Sincroniza pelo relógio do sistema
+            "-fflags", "nobuffer+fastseek", # Minimiza o atraso (buffering) do vídeo ao vivo
+            "-flags", "low_delay",          # Força decodificação de baixa latência
+            "-framedrop",                   # Descarta quadros atrasados para não travar a GUI
+            "-sync", "ext",                 # Sincroniza pelo relógio do sistema
             "-f", "mpegts",                 # Força o demuxer MPEG-TS
             "-i", "pipe:0"                  # Lê do PIPE recebido do Python
         ]
