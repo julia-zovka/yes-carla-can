@@ -96,14 +96,14 @@ class ReceiverState:
         ffplay_cmd = [
             "ffplay",
             "-window_title", "AVTP Live Stream (FFplay)",
-            "-probesize", "32000",          # Reduz latência inicial de leitura
-            "-analyzeduration", "0",        # Inicia a reprodução imediatamente
+            "-probesize", "150000",         # Aumentado para 150KB para ler SPS/PPS sem erro de rate
+            "-analyzeduration", "500000",   # 0.5 segundo de análise para garantir sincronismo            
             "-fflags", "nobuffer+fastseek", # Minimiza o atraso (buffering) do vídeo ao vivo
             "-flags", "low_delay",          # Força decodificação de baixa latência
             "-framedrop",                   # Descarta quadros atrasados para não travar a GUI
-            "-sync", "ext",                 # Sincroniza pelo relógio do sistema
             "-f", "mpegts",                 # Força o demuxer MPEG-TS
-            "-i", "pipe:0"                  # Lê do PIPE recebido do Python
+            "-i", "pipe:0",                  # Lê do PIPE recebido do Python
+            "-an",                          # Desativa áudio e elimina os avisos do PulseAudio
         ]
 
         # Abre o processo FFplay
