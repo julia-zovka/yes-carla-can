@@ -14,5 +14,7 @@ sys.path.insert(0, str(curr_folder_abs_path)) # colocando encontrado como o prim
 # instanciando a câmera (versão sem AVTP)
 from sensors import camera as camera
 
-camera = camera.RGBCameraSensor(recording = False);
+camera = camera.RGBCameraSensor("AutonomousEyes");
+camera.recording = True
+
 print(f"{camera.RGBCameraSensor.recording}")
