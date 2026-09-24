@@ -1,6 +1,6 @@
 '''
 Mock de IA: código que simula uma IA ao fazer uma decisão a partir de um cálculo simples feito a partir 
-Código gerado majoritariamente pelo Gemini 3.6 Raciocínio, sob revisão e adições da pesquisadora.
+Código gerado majoritariamente pelo Gemini 3.6 Modo Raciocínio, sob revisão e adições da pesquisadora.
 '''
 
 import numpy as np 
