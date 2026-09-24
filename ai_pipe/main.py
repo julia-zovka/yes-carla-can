@@ -17,4 +17,8 @@ from sensors import camera as camera
 camera = camera.RGBCameraSensor("AutonomousEyes");
 camera.recording = True
 
+<<<<<<< HEAD
 print(f"{camera.RGBCameraSensor.recording}")
+=======
+print(f"{camera.RGBCameraSensor.recording}")
+>>>>>>> aba5df1356824faccc348b2ba6e633ec4fd3cdb8
