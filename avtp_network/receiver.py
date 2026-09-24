@@ -22,7 +22,7 @@ import socket
 import sys
 from typing import Optional
 
-import avtp as avtp_lib
+from avtp_network.avtp import parse_mpegts_stream_packet
 
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -36,34 +36,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def parse_mpegts_stream_packet(raw_pkt: bytes) -> Optional[bytes]:
-    """
-    Extrai blocos MPEG-TS válidos (múltiplos de 188B iniciados com 0x47)
-    do pacote Ethernet/AVTP bruto.
-    """
-    # 1. Valida tamanho mínimo: Ethernet (14B) + AVTP (12B) = 26B
-    if not isinstance(raw_pkt, bytes) or len(raw_pkt) < 26:
-        return None
-
-    # Descarta cabeçalho L2/AVTP
-    raw_payload = raw_pkt[26:]
-    if len(raw_payload) < 188:
-        return None
-
-    extracted_ts = bytearray()
-    idx = 0
-    payload_len = len(raw_payload)
-
-    # Varre o payload procurando blocos de 188 bytes iniciados por 0x47
-    while idx <= payload_len - 188:
-        if raw_payload[idx] == 0x47:
-            # Encontrou o Sync Byte 0x47! Copia exatamente 188 bytes
-            extracted_ts.extend(raw_payload[idx : idx + 188])
-            idx += 188  # Salta para o próximo bloco potencial
-        else:
-            idx += 1  # Avança byte a byte até achar o alinhamento 0x47
-
-    return bytes(extracted_ts) if extracted_ts else None
 
 # ── Receiver state ────────────────────────────────────────────────────────────
 
