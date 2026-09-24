@@ -11,15 +11,8 @@ EtherType: 0x22F0
 
 import struct
 import time
+from typing import Optional
 
-from scapy.fields import (
-    ByteField,
-    ShortField,
-    XIntField,
-    XLongField,
-)
-from scapy.layers.l2 import Ether, bind_layers
-from scapy.packet import Packet
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -36,50 +29,11 @@ AVTP_DST_MAC = "91:e0:f0:00:fe:00"
 #   - Byte 2 (a0): Tcode=0x0A, App-control=0x0
 
 
-# ── Scapy AVTP IEC 61883 Layer ────────────────────────────────────────────────
 
 #bytefield= 1 bytes
 #xlong = 8 bytes
 #xintfield = 4 bytes
 #shortfield= 2 bytes 
-
-class AVTP(Packet):
-    """
-    AVTP IEC 61883 Header (IEEE 1722 Subtype 0x00), 22 bytes .
-    """
-
-    name = "AVTP IEC 61883"
-
-    fields_desc = [
-        #subtype + cd (cd=0 indica que é um stream avtpdu ( avtp data unit))
-        ByteField("subtype", 0x00),
-
-        # Byte 1: Flags 
-        ByteField("flags", 0x88),
-        # sv(stream id valid) 1 - posivel mapa de stream id
-        # version 0 (standard)
-        # mr(medida clock restart)-1 (toggle)
-        # r(reserved) 0 (standard)
-        # gv(gateway info valid) 0
-        # tv 0 
-
-        ### ByteField("sequence_num", 0),
-
-        #semopre zero,por padrao
-        ByteField("reserved1", 0),
-
-        # Bytes 4-11: stream_id (8 bytes)   
-        XLongField("stream_id", 0xAABBCCDDEEFF0001),
-        # Bytes 12-15: avtp_timestamp (4 bytes)
-        XIntField("avtp_timestamp", 0),
-
-        XIntField("gateway_info", 0),
-        ShortField("stream_data_length", 392), # 8 Bytes CIP Header + 384 Bytes MPEG-TS = 392 Bytes (0x0188)
-    ]
-
-
-# Ensina o Scapy a decodificar o Ethernet com EtherType 0x22F0
-bind_layers(Ether, AVTP, type=AVTP_ETHERTYPE)
 
 
 # ── Fragmentation helpers ─────────────────────────────────────────────────────
@@ -172,4 +126,34 @@ def fragment_mpegts_stream(
 
     return packets
 
+
+## receiver
+def parse_mpegts_stream_packet(raw_pkt: bytes) -> Optional[bytes]:
+    """
+    Extrai blocos MPEG-TS válidos (múltiplos de 188B iniciados com 0x47)
+    do pacote Ethernet/AVTP bruto.
+    """
+    # 1. Valida tamanho mínimo: Ethernet (14B) + AVTP (12B) = 26B
+    if not isinstance(raw_pkt, bytes) or len(raw_pkt) < 26:
+        return None
+
+    # Descarta cabeçalho L2/AVTP
+    raw_payload = raw_pkt[26:]
+    if len(raw_payload) < 188:
+        return None
+
+    extracted_ts = bytearray()
+    idx = 0
+    payload_len = len(raw_payload)
+
+    # Varre o payload procurando blocos de 188 bytes iniciados por 0x47
+    while idx <= payload_len - 188:
+        if raw_payload[idx] == 0x47:
+            # Encontrou o Sync Byte 0x47! Copia exatamente 188 bytes
+            extracted_ts.extend(raw_payload[idx : idx + 188])
+            idx += 188  # Salta para o próximo bloco potencial
+        else:
+            idx += 1  # Avança byte a byte até achar o alinhamento 0x47
+
+    return bytes(extracted_ts) if extracted_ts else None
 
