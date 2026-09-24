@@ -36,8 +36,7 @@ AVTP_DST_MAC = "91:e0:f0:00:fe:00"
 #shortfield= 2 bytes 
 
 
-# ── Fragmentation helpers ─────────────────────────────────────────────────────
-
+# sender--> camera
 
 def fragment_mpegts_stream(
     ts_bytes: bytes,
