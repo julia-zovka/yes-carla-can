@@ -47,8 +47,10 @@ class MPEGTSStreamEncoder:
         codec_options = {
             "tune": "zerolatency",
             "preset": "ultrafast",
-            "g": "5",  # Keyframe (I-frame) a cada 5 frames para recuperação rápida
-            "x264-params": "repeat-headers=1:aud=1"  # Força injeção de SPS/PPS
+            "g": "5",                                           # Keyframe (I-frame) a cada 5 frames para recuperação rápida
+            "keyint_min": "5",                                  # Intervalo MÍNIMO de 5 frames
+            "sc_threshold": "0",                                # Desativa detecção de cena para manter Keyframes fixos
+            "x264-params": "repeat-headers=1:aud=1:force-cfr=1" # Força injeção de SPS/PPS + Annex B
         }
 
         # 3. Cria a stream H.264 uma única vez
