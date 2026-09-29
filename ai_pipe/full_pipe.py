@@ -1,14 +1,28 @@
-'''
-Mock de IA: código que simula uma IA ao fazer uma decisão a partir de um cálculo simples feito a partir 
-Código gerado majoritariamente pelo Gemini 3.6 Modo Raciocínio, sob revisão e adições da pesquisadora.
-'''
+# colocando o fluxo completo num só arquivo, mas o objetivo futuro é modularizá-lo
 
 import numpy as np 
 import time
 from random import randint
+import sys 
+from pathlib import Path
+import carla
+from queue import LifoQueue
 
+# encontrando o caminho dos imports em relação ao diretório do repositório 
+curr_folder_abs_path = Path(__file__).resolve() # encontrando o caminho absoluto da pasta atual
+
+# enquanto não chegamos na pasta do diretório (e enquanto o pai da pasta não é ela própria, indicando que não há mais níveis a subir), sobrescrevemos a pasta atual pelo seu pai 
+while curr_folder_abs_path.name != "yes-carla-can" and curr_folder_abs_path.parent != curr_folder_abs_path:
+    curr_folder_abs_path =  curr_folder_abs_path.parent
+
+# se saímos do while, é porque encontramos o caminho correto 
+sys.path.insert(0, str(curr_folder_abs_path)) # colocando encontrado como o primeiro na fila de busca por módulos e arquivos
+
+from sensors.camera import RGBCameraSensor
+from gui.world import World
 
 def prosseguir_ou_frear(imagem_rgb):
+    # sugestão para versões futuras: considerar utilizar o comando sensor.camera.depth do próprio CARLA 
 
     # verificando se a imagem recebida está no formato correto (tridimensional) 
     if imagem_rgb.shape != 3:
@@ -52,10 +66,11 @@ def prosseguir_ou_frear(imagem_rgb):
 
     return throttle, brake
 
-# sugestão para versões futuras: considerar utilizar o comando sensor.camera.depth do próprio CARLA 
+# criando a pilha que guardará as imagens para serem processadas
+ai_queue = LifoQueue()
+camera = World.rgb_camera_sensor
 
+def ai_callback(image, queue):
+    pass
 
-
-
-
-    
+# colocar a 
