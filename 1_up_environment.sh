@@ -119,15 +119,24 @@ sudo cangw -A -s "${VCAN_INTERFACE}" -d vcan1 -e 2>/dev/null || true
 echo "Waiting for CARLA to start..."
 sleep 5
 
-# Executar os módulos Python no Host com sudo -E (Acesso a vcan0 + veth-s Socket RAW + localhost)
+echo ""
+echo "======================================================================"
+echo " INFRAESTRUTURA DE REDE E CARLA PRONTOS!"
+echo " Agora, abra OUTRO terminal e inicie o RECEIVER:"
+echo ""
+echo "   xhost +local:sudo "
+echo ""
+echo ""
+echo "   sudo -E DISPLAY=\$DISPLAY PYTHONPATH=. ip netns exec receiver \"\$CONDA_PREFIX/bin/python\" avtp_network/receiver.py -i veth-r -o ."
+echo ""
+echo "======================================================================"
+read -p "Pressione [ENTER] AQUI após iniciar o receiver para subir os clientes do CARLA..."
+
+# Executar os módulos Python no Host
 echo "Starting CARLA client module..."
 sudo "${PYTHON_EXEC}" "${SCRIPT_DIR}/CARLA_client_module.py" --vcan "${VCAN_INTERFACE}" &
 
 echo "Starting vehicle controls module..."
 sudo "${PYTHON_EXEC}" "${SCRIPT_DIR}/vehicle_controls_module.py" --dbc "${DBC_PATH}" --vcan "${VCAN_INTERFACE}" &
 
-echo "Environment is up!"
-
-
-#echo "Starting CARLA client module..."
-#sudo DISPLAY="$DISPLAY" PYTHONPATH="$PYTHONPATH" SDL_AUDIODRIVER=dummy "${PYTHON_EXEC}" "${SCRIPT_DIR}/CARLA_client_module.py" --vcan "${VCAN_INTERFACE}" &
+echo "Environment is completely up!"
