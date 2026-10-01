@@ -127,32 +127,43 @@ def fragment_mpegts_stream(
 
 
 ## receiver
+
+
 def parse_mpegts_stream_packet(raw_pkt: bytes) -> Optional[bytes]:
     """
-    Extrai blocos MPEG-TS válidos (múltiplos de 188B iniciados com 0x47)
-    do pacote Ethernet/AVTP bruto.
+    Extrai blocos MPEG-TS de 188 bytes a partir do cabeçalho completo:
+    Ethernet (14B) + AVTP (24B) + CIP (8B) + SPH (4B) = 50B até o Sync Byte 0x47.
     """
-    # 1. Valida tamanho mínimo: Ethernet (14B) + AVTP (12B) = 26B
-    if not isinstance(raw_pkt, bytes) or len(raw_pkt) < 26:
+    HEADER_OFFSET = 50       # 14 + 24 + 8 + 4
+    BLOCK_SIZE = 192          # 4B SPH + 188B TS
+
+    # Validação mínima: 50B de cabeçalho + 188B do primeiro pacote TS
+    if not isinstance(raw_pkt, bytes) or len(raw_pkt) < (HEADER_OFFSET + 188):
         return None
 
-    # Descarta cabeçalho L2/AVTP
-    raw_payload = raw_pkt[26:]
-    if len(raw_payload) < 188:
-        return None
+    payload_len = len(raw_pkt)
+
+    # Checagem direta no offset 50
+    if raw_pkt[HEADER_OFFSET] != 0x47:
+        # Fallback de segurança para o caso de algum pacote sem o CIP (38) ou sem o SPH (46)
+        if raw_pkt[38] == 0x47:
+            HEADER_OFFSET = 38
+            BLOCK_SIZE = 188
+        elif raw_pkt[42] == 0x47:
+            HEADER_OFFSET = 42
+            BLOCK_SIZE = 192
+        elif raw_pkt[46] == 0x47:
+            HEADER_OFFSET = 46
+            BLOCK_SIZE = 188
+        else:
+            return None  # Não encontrou o byte de sincronismo 0x47 no alinhamento esperado
 
     extracted_ts = bytearray()
-    idx = 0
-    payload_len = len(raw_payload)
 
-    # Varre o payload procurando blocos de 188 bytes iniciados por 0x47
-    while idx <= payload_len - 188:
-        if raw_payload[idx] == 0x47:
-            # Encontrou o Sync Byte 0x47! Copia exatamente 188 bytes
-            extracted_ts.extend(raw_payload[idx : idx + 188])
-            idx += 188  # Salta para o próximo bloco potencial
-        else:
-            idx += 1  # Avança byte a byte até achar o alinhamento 0x47
+    # Pega o primeiro bloco no offset 50 e pula de 192 em 192 se houver múltiplos blocos no pacote
+    for i in range(HEADER_OFFSET, payload_len, BLOCK_SIZE):
+        ts_pkt = raw_pkt[i : i + 188]
+        if len(ts_pkt) == 188 and ts_pkt[0] == 0x47:
+            extracted_ts.extend(ts_pkt)
 
     return bytes(extracted_ts) if extracted_ts else None
-

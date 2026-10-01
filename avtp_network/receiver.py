@@ -96,11 +96,16 @@ class ReceiverState:
 
 
     def handle_packet(self, raw_pkt: bytes):
-        # Validação do tamanho mínimo real do pacote L2 (Ethernet 14B + AVTP 12B)
-        if len(raw_pkt) < 26:
+        # 1. Validação de tamanho mínimo L2 completo (Ethernet 14B + AVTP 24B + CIP 8B + SPH 4B + TS 188B = 238B)
+        if len(raw_pkt) < 238:
             return
 
-        # 1. Checagem de Perda de Pacotes pelo Sequence Number (Byte index 16)
+        # 2. Tenta extrair o payload MPEG-TS (50B de offset)
+        ts_data = parse_mpegts_stream_packet(raw_pkt)
+        if ts_data is None:
+            return  # Descarta se não houver o byte de sincronismo 0x47 no offset correto
+
+        # 3. Checagem de Perda de Pacotes (Apenas para pacotes com MPEG-TS válido)
         current_seq = raw_pkt[16]
         if self.last_sequence_num is not None:
             expected_seq = (self.last_sequence_num + 1) & 0xFF
@@ -113,20 +118,15 @@ class ReceiverState:
                 )
         self.last_sequence_num = current_seq
 
-       # 2. Extração e limpeza do payload MPEG-TS (376B por pacote válido)
-        ts_data = parse_mpegts_stream_packet(raw_pkt)
-        if ts_data is None:
-            return  # Descarta caso não passe na validação de sincronismo 0x47
-
+        # 4. Atualização de estatísticas do receiver
         self.packets_received += 1
         self.bytes_received += len(ts_data)
 
-        # Gravaçao somente se a opção --output-dir for usada
+        # Gravação em disco se a opção --output-dir for usada
         if self.out_file:
             self.out_file.write(ts_data)
 
-
-        # Escreve com verificação estrita de processo ativo
+        # Envio para o ffplay via PIPE (stdin)
         if self.ffplay_proc and self.ffplay_proc.poll() is None:
             try:
                 if not self.is_buffered:
@@ -141,9 +141,8 @@ class ReceiverState:
                     self.ffplay_proc.stdin.flush()
             except (BrokenPipeError, OSError):
                 pass
-             
-        
-        # Log a cada 100 pacotes recebidos
+
+        # Log a cada 100 pacotes válidos recebidos
         if self.packets_received % 100 == 0:
             elapsed = time.time() - self.start_time
             rate_kbps = (self.bytes_received * 8 / 1000) / elapsed if elapsed > 0 else 0
@@ -153,7 +152,7 @@ class ReceiverState:
                 f" | Taxa: {rate_kbps:>6.1f} kbps"
                 f" | Perdas: {self.packets_lost:>4}"
             )
-
+            
     def close(self):
         """Fecha o arquivo ao encerrar o script."""
         if self.out_file:
