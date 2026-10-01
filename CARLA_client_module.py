@@ -36,6 +36,7 @@ import pygame
 
 from can_network.network import CAN_Network, VCAN_CHANNEL
 from gui import CANTrafficDisplay, HUD, KeyboardControl, World
+from ai_pipe.full_pipe import * 
 
 
 def game_loop(args):
@@ -116,6 +117,9 @@ def game_loop(args):
                     display, pos=(disp_w - pip_w - 10, disp_h - pip_h - 10)
                 )
             pygame.display.flip()
+
+            # taking the last numpy array from the image queue and sending it to the AI pipeline's function in charge of processing it
+            throttle_or_brake(world.rgb_camera_sensor.imgqueue.get())
 
     finally:
         # Stop CARLA sensor streams first so the server can close sessions cleanly

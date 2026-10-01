@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 import carla
 from queue import LifoQueue
+from CARLA_client_module import 
 
 # encontrando o caminho dos imports em relação ao diretório do repositório 
 curr_folder_abs_path = Path(__file__).resolve() # encontrando o caminho absoluto da pasta atual
@@ -21,11 +22,10 @@ sys.path.insert(0, str(curr_folder_abs_path)) # colocando encontrado como o prim
 from sensors.camera import RGBCameraSensor
 from gui.world import World
 
-def prosseguir_ou_frear(imagem_rgb):
-    # sugestão para versões futuras: considerar utilizar o comando sensor.camera.depth do próprio CARLA 
+def throttle_or_brake(imagem_rgb):
 
     # verificando se a imagem recebida está no formato correto (tridimensional) 
-    if imagem_rgb.shape != 3:
+    if imagem_rgb.shape[2] != 3:
         print(f"Formato inválido. Imagem com {imagem_rgb.shape} dimensões.\n")
         return 
     
@@ -64,11 +64,9 @@ def prosseguir_ou_frear(imagem_rgb):
     # simulando uma "demora" de inferência, que deve acontecer quando colocarmos um modelo de verdade para funcionar
     time.sleep(0.03)
 
-    return throttle, brake
+    print(f"Array inicial: {imagem_rgb}; throttle: {throttle}, brake: {brake}.\n")
 
-# criando a pilha que guardará as imagens para serem processadas
-ai_queue = LifoQueue()
-camera = World.rgb_camera_sensor
+    return throttle, brake
 
 def ai_callback(image, queue):
     pass
