@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 import carla
 from queue import LifoQueue
-from CARLA_client_module import 
+from can_network.network import CAN_Network
 
 # encontrando o caminho dos imports em relação ao diretório do repositório 
 curr_folder_abs_path = Path(__file__).resolve() # encontrando o caminho absoluto da pasta atual
@@ -51,15 +51,15 @@ def throttle_or_brake(imagem_rgb):
     # se mais de 40% da área for de pixels na escala do asfalto, consideramos que o caminho está livre, logo, o carro será acelerado
     if proporcao_pista > 0.4:
 
-        throttle = 0.3 - ruido1
-        brake = 0.0 + ruido2
+        throttle = min(0.3 - ruido1, 1.0)
+        brake = min(0.0 + ruido2, 1.0)
 
 
     # do contrário, o carro deve ser freado
     else: 
 
-        throttle = 0.0 + ruido1
-        brake = 1.0 - ruido2
+        throttle = min(0.0 + ruido1, 1)
+        brake = min(1.0 - ruido2, 1) 
 
     # simulando uma "demora" de inferência, que deve acontecer quando colocarmos um modelo de verdade para funcionar
     time.sleep(0.03)
@@ -68,7 +68,18 @@ def throttle_or_brake(imagem_rgb):
 
     return throttle, brake
 
-def ai_callback(image, queue):
-    pass
+class ai_control(object):
 
-# colocar a 
+    def __init__(self, throttle, brake, can_bus):
+
+        self.throttle_queue = throttle
+        self.brake_queue = brake
+        self.can_bus = can_bus 
+
+    
+
+control = ai_control()
+
+can_bus = CAN_Network()
+can_bus.send_throttle_msg()
+

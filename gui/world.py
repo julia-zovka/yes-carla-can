@@ -1,6 +1,5 @@
 import random
 import sys
-
 import carla
 
 from sensors import *
