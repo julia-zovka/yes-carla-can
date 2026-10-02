@@ -48,11 +48,13 @@ def throttle_or_brake(imagem_rgb):
     ruido1 = random1/100
     ruido2 = random2/100
 
+
+    '''
     # se mais de 40% da área for de pixels na escala do asfalto, consideramos que o caminho está livre, logo, o carro será acelerado
     if proporcao_pista > 0.4:
 
         throttle = min(0.3 - ruido1, 1.0)
-        brake = min(0.0 + ruido2, 1.0)
+        #brake = min(0.0 + ruido2, 1.0)
 
 
     # do contrário, o carro deve ser freado
@@ -63,6 +65,11 @@ def throttle_or_brake(imagem_rgb):
 
     # simulando uma "demora" de inferência, que deve acontecer quando colocarmos um modelo de verdade para funcionar
     time.sleep(0.03)
+
+    '''
+
+    throttle = 0.6
+    brake = 0.0
 
     print(f"Array inicial: {imagem_rgb}; throttle: {throttle}, brake: {brake}.\n")
 
