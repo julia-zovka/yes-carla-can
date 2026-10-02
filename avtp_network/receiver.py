@@ -20,7 +20,7 @@ import subprocess
 from pathlib import Path
 import socket
 import sys
-from typing import Optional
+from datetime import datetime
 
 from avtp_network.avtp import parse_mpegts_stream_packet
 
@@ -31,7 +31,7 @@ AVTP_ETHERTYPE = 0x22F0  # EtherType do IEEE 1722 / AVTP
 def parse_args():
     parser = argparse.ArgumentParser(description="AVTP MPEG-TS Video Receiver with FFplay")
     parser.add_argument("-i", "--interface", default="veth-r", help="Network interface to listen on (default: veth-r)")
-    parser.add_argument("-o", "--output-dir", default=None, help="Directory to save received frames as PNG files (optional)")
+    parser.add_argument("-o", "--output-dir", default=None, help="Directory to save video stream to disk (optional)")
     parser.add_argument("-t", "--timeout", type=float, default=None, help="Stop sniffing after this many seconds of inactivity (optional)")
     return parser.parse_args()
 
@@ -59,7 +59,9 @@ class ReceiverState:
         
         self.out_file = None
         if output_dir:
-            output_path = output_dir / "output_stream.ts"
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+            
+            output_path = output_dir / f"output_stream_{timestamp}.ts"
             self.out_file = open(output_path, "wb")
             print(f"  [i] Cópia em disco sendo salva em: {output_path.resolve()}")
         

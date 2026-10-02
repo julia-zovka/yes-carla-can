@@ -131,7 +131,7 @@ ip -n "$NS_SWITCH" link set br0 type bridge stp_state 0
 # ── Optional packet capture ───────────────────────────────────────────────────
 CAP_FILE=""
 if [[ $CAPTURE -eq 1 ]]; then
-    CAP_FILE="avtp_capture_$(date +%Y%m%d_%H-%M-%S).pcap"
+    CAP_FILE="avtp_capture_$(date +"%Y-%m-%d_%H:%M:%S").pcap"
     echo "[*] Starting packet capture → $CAP_FILE"
     ip netns exec "$NS_SWITCH" \
         tcpdump -i br0 -w "$(pwd)/$CAP_FILE" ether proto 0x22F0 \
