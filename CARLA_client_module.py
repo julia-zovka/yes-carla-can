@@ -119,7 +119,13 @@ def game_loop(args):
             pygame.display.flip()
 
             # taking the last numpy array from the image queue and sending it to the AI pipeline's function in charge of processing it
-            throttle_or_brake(world.rgb_camera_sensor.imgqueue.get())
+            ai_throttle, ai_brake = throttle_or_brake(world.rgb_camera_sensor.imgqueue.get())
+
+            # sending the throttle and the brake values to the class that will send it through the CAN network
+            ai_controller = ai_control(ai_throttle, ai_brake)
+            can_bus.send_throttle_msg(ai_controller)
+            can_bus.send_brake_msg(ai_controller)
+            
 
     finally:
         # Stop CARLA sensor streams first so the server can close sessions cleanly

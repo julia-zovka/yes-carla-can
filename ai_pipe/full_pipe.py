@@ -70,16 +70,8 @@ def throttle_or_brake(imagem_rgb):
 
 class ai_control(object):
 
-    def __init__(self, throttle, brake, can_bus):
+    def __init__(self, throttle, brake):
 
-        self.throttle_queue = throttle
-        self.brake_queue = brake
-        self.can_bus = can_bus 
-
-    
-
-control = ai_control()
-
-can_bus = CAN_Network()
-can_bus.send_throttle_msg()
+        self.throttle = throttle
+        self.brake = brake
 
