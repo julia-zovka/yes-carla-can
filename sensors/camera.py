@@ -79,15 +79,6 @@ class MPEGTSStreamEncoder:
         self.pts_counter += 1
 
 
-        # Força ultrafast, zerolatency e injeção do SPS/PPS no extradata
-        #self.stream.options = {
-        #"flags": "+global_header",     # Força a criação do extradata SPS/PPS
-        #'tune': 'zerolatency',
-        #'preset': 'ultrafast',
-        #'g': '5',  # Keyframe a cada 5 frames
-        #"x264-params": "repeat-headers=1:aud=1"       # Injeta SPS/PPS + AUD em cada Keyframe
-        #}
-
         # 3. Codifica o frame com o FFmpeg e envia pra o container mpeg-ts 
         for packet in self.stream.encode(frame):
             self.container.mux(packet)
@@ -138,10 +129,14 @@ class RGBCameraSensor(object):
     ───────────────────────────────────────────────────────────────────────────
     """
 
-    # Resolution of the camera (pixels).  Must match or be smaller than the
-    # pygame display so the PiP overlay fits on screen.
-    IMAGE_WIDTH = 470
-    IMAGE_HEIGHT = 200
+    # Resolução REAL da imagem (para o Streaming H.264/AVTP ter alta qualidade)
+    IMAGE_WIDTH = 960
+    IMAGE_HEIGHT = 400
+
+    # Resolução de EXIBIÇÃO no Pygame (pequena para não ocupar espaço na tela)
+    DISPLAY_WIDTH = 470
+    DISPLAY_HEIGHT = 200
+
 
     def __init__(self, parent_actor, gamma_correction=2.2, stream_id="0xAABBCCDDEEFF0001", interface="veth-s"):
         self.sensor = None
@@ -254,9 +249,15 @@ class RGBCameraSensor(object):
         
 
 
-    def render(self, display, pos=(0, 0)):
+    def render(self, display, pos=None):
         """Exibe a imagem na tela do Pygame."""
         if self.surface is not None:
+            if pos is None:
+                display_width = display.get_width()
+                display_height = display.get_height()
+
+                # Canto inferior direito
+                pos = (display_width - self.DISPLAY_WIDTH, display_height - self.DISPLAY_HEIGHT)
             display.blit(self.surface, pos)
 
 
@@ -280,8 +281,14 @@ class RGBCameraSensor(object):
             rgb_array = array[:, :, :3][:, :, ::-1]
             self.array = rgb_array
             try:
-                # Transpõe para o formato que a superfície do Pygame espera (Largura, Altura, 3)
-                self.surface = pygame.surfarray.make_surface(rgb_array.swapaxes(0, 1))
+                # 1. Cria a superfície no tamanho original (960x400)
+                full_surface = pygame.surfarray.make_surface(rgb_array.swapaxes(0, 1))
+                
+                # 2. Redimensiona apenas para a tela do Pygame (470x200)
+                self.surface = pygame.transform.scale(
+                    full_surface, 
+                    (self.DISPLAY_WIDTH, self.DISPLAY_HEIGHT)
+                )
             except Exception:
                 pass
 
@@ -315,17 +322,17 @@ class RGBCameraSensor(object):
             return
 
         # Envia os fragmentos
+
+        if not self.sock:
+            print("[!] Erro: Socket AF_PACKET não está aberto!")
+            return
+        
         sent_count = 0
         try:
-            if self.sock:
-                for pkt in packets:
-                    # Converte para bytes se for pacote Scapy, ou usa diretamente se já for bytes
-                    pkt_bytes = bytes(pkt) if not isinstance(pkt, bytes) else pkt
-                    self.sock.send(pkt_bytes)
-                    sent_count += 1
-            else:
-                sendp(packets, iface=self.interface, verbose=0)
-                sent_count = len(packets)
+            for pkt in packets:
+                pkt_bytes = bytes(pkt) if not isinstance(pkt, bytes) else pkt
+                self.sock.send(pkt_bytes)
+                sent_count += 1
         except Exception as err:
             print(f"[!] Erro no socket.send: {err}")
             return
