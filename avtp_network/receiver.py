@@ -23,6 +23,8 @@ import sys
 from datetime import datetime
 
 from avtp_network.avtp import parse_mpegts_stream_packet
+from corruption import CorruptionTester, CorruptionMode
+
 
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -33,7 +35,17 @@ def parse_args():
     parser.add_argument("-i", "--interface", default="veth-r", help="Network interface to listen on (default: veth-r)")
     parser.add_argument("-o", "--output-dir", default=None, help="Directory to save video stream to disk (optional)")
     parser.add_argument("-t", "--timeout", type=float, default=None, help="Stop sniffing after this many seconds of inactivity (optional)")
+    
+    # ── Robustness / fault-injection test (local, no network attack) ──────────
+    parser.add_argument("--corrupt-test", action="store_true",
+                         help="Ativa o teste de robustez: corrompe deliberadamente blocos TS "
+                              "já recebidos, no próprio pipeline local, para medir o efeito no ffplay.")
+    parser.add_argument("--corrupt-period", type=int, default=5,
+                         help="A cada N blocos TS recebidos, corrompe 1 (default: 5, alinhado ao GOP do encoder).")
+    parser.add_argument("--corrupt-mode", choices=[m.value for m in CorruptionMode], default="syncbyte",
+                         help="Tipo de corrupção aplicada: syncbyte | zero | bitflip (default: syncbyte).")
     return parser.parse_args()
+
 
 
 
@@ -44,11 +56,14 @@ class ReceiverState:
     Acumula os blocos MPEG-TS recebidos -> jitter buffer-> envia pro ffplay e pro discom arquivo de vídeo (.ts).
     """
 
-    def __init__(self, output_dir: Path | None = None, output_filename: str = "output_stream.ts"):
+    def __init__(self, output_dir: Path | None = None, output_filename: str = "output_stream.ts", corruption_tester: CorruptionTester | None = None):
         self.packets_received = 0
         self.bytes_received = 0
         self.start_time = time.time()
 
+        # Harness de teste de robustez (opcional, desligado por padrão)
+        self.corruption_tester = corruption_tester
+        
         self.last_sequence_num = None
         self.packets_lost = 0
 
@@ -124,6 +139,14 @@ class ReceiverState:
         self.packets_received += 1
         self.bytes_received += len(ts_data)
 
+         # 4.5 Harness de teste de robustez: corrompe deliberadamente este
+        #     bloco (já recebido, local) a cada N blocos, para medir o
+        #     efeito no decoder do ffplay sem envolver a rede.
+        if self.corruption_tester is not None:
+            ts_data, _was_corrupted = self.corruption_tester.maybe_corrupt(ts_data)
+
+        
+
         # Gravação em disco se a opção --output-dir for usada
         if self.out_file:
             self.out_file.write(ts_data)
@@ -179,7 +202,15 @@ def run(args):
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    state = ReceiverState(output_dir=output_dir)
+    corruption_tester = None
+    if args.corrupt_test:
+        corruption_tester = CorruptionTester(
+            period=args.corrupt_period,
+            mode=CorruptionMode(args.corrupt_mode),
+            enabled=True,
+        )
+
+    state = ReceiverState(output_dir=output_dir, corruption_tester=corruption_tester)
 
     print("=" * 65)
     print("  AVTP Video Receiver (MPEG-TS Stream)")
@@ -187,6 +218,9 @@ def run(args):
     print(f"  Interface : {args.interface}")
     print(f"  Output dir: {args.output_dir or '(diretório atual)'}")
     print(f"  Timeout   : {args.timeout or 'none'}")
+    if corruption_tester:
+            print(f"  [TESTE DE ROBUSTEZ ATIVO] modo={corruption_tester.mode.value} "
+                  f"período={corruption_tester.period}")
     print("=" * 65)
     print()
 
@@ -244,6 +278,10 @@ def run(args):
     print(f"  Elapsed time     : {elapsed:.2f} s")
     print(f"  Average Rate     : {avg_rate:.1f} kbps")
     print("=" * 65)
+
+    if corruption_tester:
+        print()
+        print(corruption_tester.summary())
 
   
 if __name__ == "__main__":
