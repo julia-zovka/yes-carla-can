@@ -209,59 +209,59 @@ class KeyboardControl(object):
                             % ("On" if self._autopilot_enabled else "Off")
                         )
 
-        if not self._autopilot_enabled:
-            if isinstance(self._control, carla.VehicleControl):
-                if can_network.door_change_state:
-                    can_network.door_change_state = False
-                    try:
-                        if world.doors_are_open:
-                            world.hud.notification("Closing Doors")
-                            world.doors_are_open = False
-                            world.player.close_door(carla.VehicleDoor.All)
-                        else:
-                            world.hud.notification("Opening doors")
-                            world.doors_are_open = True
-                            world.player.open_door(carla.VehicleDoor.All)
-                    except Exception:
-                        pass
+        #if not self._autopilot_enabled:
+        if isinstance(self._control, carla.VehicleControl):
+            if can_network.door_change_state:
+                can_network.door_change_state = False
+                try:
+                    if world.doors_are_open:
+                        world.hud.notification("Closing Doors")
+                        world.doors_are_open = False
+                        world.player.close_door(carla.VehicleDoor.All)
+                    else:
+                        world.hud.notification("Opening doors")
+                        world.doors_are_open = True
+                        world.player.open_door(carla.VehicleDoor.All)
+                except Exception:
+                    pass
 
-                world.hud.notification(
-                    "%s Transmission"
-                    % ("Manual" if self._control.manual_gear_shift else "Automatic")
-                )
+            world.hud.notification(
+                "%s Transmission"
+                % ("Manual" if self._control.manual_gear_shift else "Automatic")
+            )
 
-                if not self._lights & carla.VehicleLightState.Position:
-                    world.hud.notification("Position lights")
-                else:
-                    world.hud.notification("Low beam lights")
-                if self._lights & carla.VehicleLightState.LowBeam:
-                    world.hud.notification("Fog lights")
-                if self._lights & carla.VehicleLightState.Fog:
-                    world.hud.notification("Lights off")
+            if not self._lights & carla.VehicleLightState.Position:
+                world.hud.notification("Position lights")
+            else:
+                world.hud.notification("Low beam lights")
+            if self._lights & carla.VehicleLightState.LowBeam:
+                world.hud.notification("Fog lights")
+            if self._lights & carla.VehicleLightState.Fog:
+                world.hud.notification("Lights off")
 
-                current_lights = can_network.current_lights
+            current_lights = can_network.current_lights
 
-                if (
-                    current_lights != self._lights
-                ):  # Change the light state only if necessary
-                    self._lights = current_lights
-                    world.player.set_light_state(carla.VehicleLightState(self._lights))
-                ## Apply control
-                if not self._ackermann_enabled:
-                    received_controls = can_network.recv_msg()
-                    world.player.apply_control(received_controls)
-                else:
-                    world.player.apply_ackermann_control(self._ackermann_control)
-                    # Update control to the last one applied by the ackermann controller.
-                    self._control = world.player.get_control()
-                    # Update hud with the newest ackermann control
-                    world.hud.update_ackermann_control(self._ackermann_control)
+            if (
+                current_lights != self._lights
+            ):  # Change the light state only if necessary
+                self._lights = current_lights
+                world.player.set_light_state(carla.VehicleLightState(self._lights))
+            ## Apply control
+            if not self._ackermann_enabled:
+                received_controls = can_network.recv_msg()
+                world.player.apply_control(received_controls)
+            else:
+                world.player.apply_ackermann_control(self._ackermann_control)
+                # Update control to the last one applied by the ackermann controller.
+                self._control = world.player.get_control()
+                # Update hud with the newest ackermann control
+                world.hud.update_ackermann_control(self._ackermann_control)
 
-            elif isinstance(self._control, carla.WalkerControl):
-                self._parse_walker_keys(
-                    pygame.key.get_pressed(), clock.get_time(), world
-                )
-                world.player.apply_control(self._control)
+        elif isinstance(self._control, carla.WalkerControl):
+            self._parse_walker_keys(
+                pygame.key.get_pressed(), clock.get_time(), world
+            )
+            world.player.apply_control(self._control)
 
     def _parse_vehicle_keys(self, keys, milliseconds):
         if keys[K_UP] or keys[K_w]:
