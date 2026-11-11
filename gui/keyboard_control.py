@@ -46,7 +46,8 @@ except ImportError:
 class KeyboardControl(object):
     """Class that handles keyboard input."""
 
-    def __init__(self, world, start_in_autopilot):
+    #def __init__(self, world, start_in_autopilot=True):
+    def __init__(self, world, start_in_autopilot=False):
         self._can = CAN_Network()
         self._autopilot_enabled = start_in_autopilot
         self._ackermann_enabled = False
@@ -209,7 +210,7 @@ class KeyboardControl(object):
                             % ("On" if self._autopilot_enabled else "Off")
                         )
 
-        #if not self._autopilot_enabled:
+        # if not self._autopilot_enabled:
         if self._autopilot_enabled:
             if isinstance(self._control, carla.VehicleControl):
                 if can_network.door_change_state:
@@ -253,8 +254,8 @@ class KeyboardControl(object):
                     # sending the autopilot commands to the CAN bus
                     autopilot_controls = world.player.get_control()
                     can_network.send_msg(autopilot_controls)
-                    received_controls = can_network.recv_msg()
-                    world.player.apply_control(received_controls)
+                    #received_controls = can_network.recv_msg()
+                    #world.player.apply_control(received_controls)
 
 
                     '''
@@ -262,6 +263,7 @@ class KeyboardControl(object):
                     world.player.apply_control(received_controls)
                     '''
                 else:
+                    # Ver como man dar essa informação pro
                     world.player.apply_ackermann_control(self._ackermann_control)
                     # Update control to the last one applied by the ackermann controller.
                     self._control = world.player.get_control()

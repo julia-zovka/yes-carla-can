@@ -14,8 +14,15 @@ import logging
 import os
 import signal
 import sys
+import xml.etree.ElementTree as ET
+import carla 
+import math
 
 try:
+
+    pcla_path = '/home/liveuser05/PCLA'
+    sys.path.append(pcla_path)
+
     sys.path.append(
         glob.glob(
             "../carla/dist/carla-*%d.%d-%s.egg"
@@ -26,6 +33,9 @@ try:
             )
         )[0]
     )
+
+
+    
 except IndexError:
     pass
 
@@ -33,11 +43,11 @@ import tkinter as tk
 
 import carla
 import pygame
-
 from can_network.network import CAN_Network, VCAN_CHANNEL
 from gui import CANTrafficDisplay, HUD, KeyboardControl, World
-from ai_pipe.full_pipe import * 
 
+
+from PCLA import PCLA 
 
 def game_loop(args):
     pygame.init()
@@ -51,6 +61,7 @@ def game_loop(args):
 
     world = None
     original_settings = None
+    pcla = None
     can_bus = CAN_Network(channel=args.vcan)
     can_display = CANTrafficDisplay(channel=args.vcan)
 
@@ -93,18 +104,116 @@ def game_loop(args):
         world = World(sim_world, hud, args, can_bus)
         controller = KeyboardControl(world, args.autopilot)
 
-        if args.sync:
-            sim_world.tick()
-        else:
-            sim_world.wait_for_tick()
+        # implementing an Agent
+        agent = "autoware_v1"
+        route = "/home/liveuser05/PCLA/sample_route.xml"
+        
+        tree = ET.parse(route)
+        waypoints = tree.getroot().findall('.//waypoint')
 
-        clock = pygame.time.Clock()
-        while True:
+        # Primeiro waypoint (posição de spawn)
+        x0 = float(waypoints[0].attrib['x'])
+        y0 = float(waypoints[0].attrib['y'])
+        z0 = float(waypoints[0].attrib['z'])
+
+        # Segundo waypoint (para determinar a direção do trajeto)
+        x1 = float(waypoints[1].attrib['x'])
+        y1 = float(waypoints[1].attrib['y'])
+
+        # 2. PROJETAR NA ALTURA REAL DO ASFALTO NO MAPA DO CARLA
+        carla_map = sim_world.get_map()
+        road_wp = carla_map.get_waypoint(
+            carla.Location(x=x0, y=y0, z=z0),
+            project_to_road=True,
+            lane_type=carla.LaneType.Driving
+        )
+
+        # Usar as coordenadas X, Y e Z do CENTRO DA PISTA obtidas do road_wp + 0.5m de elevação limpa
+        spawn_location = carla.Location(
+            x=road_wp.transform.location.x,
+            y=road_wp.transform.location.y,
+            z=road_wp.transform.location.z + 0.5
+        )
+
+        # 2. CALCULAR O YAW E RECUAR O SPAWN EM 6M ANTES DO WP0
+        dx = x1 - x0
+        dy = y1 - y0
+        yaw_route = math.degrees(math.atan2(dy, dx))
+        yaw_rad = math.radians(yaw_route)
+
+        # Recua 6.0 metros para trás em relação à direção da rota
+        offset_dist = 6.0
+        spawn_x = x0 - offset_dist * math.cos(yaw_rad)
+        spawn_y = y0 - offset_dist * math.sin(yaw_rad)
+
+        safe_z = road_wp.transform.location.z + 0.5
+
+        spawn_transform = carla.Transform(
+            carla.Location(x=spawn_x, y=spawn_y, z=safe_z),
+            carla.Rotation(pitch=0.0, yaw=yaw_route, roll=0.0)
+        )
+
+        # 4. POSICIONAR O VEÍCULO ALINHADO COM A ROTA (Roll e Pitch em 0)
+        spawn_transform = carla.Transform(
+            spawn_location,
+            carla.Rotation(pitch=0.0, yaw=yaw_route, roll=0.0)
+        )
+
+        # applying the position to the vehicle 
+        world.player.set_transform(spawn_transform)
+
+        world.player.set_target_velocity(carla.Vector3D(0, 0, 0))
+        world.player.set_target_angular_velocity(carla.Vector3D(0, 0, 0))
+
+        # 5. TICKS DE ACOMODAÇÃO DA SUSPENSÃO (15 passos)
+        for _ in range(25):
             if args.sync:
                 sim_world.tick()
+            else:
+                sim_world.wait_for_tick()
+
+        # 6. VERIFICAÇÃO DE POSE NO TERMINAL
+        curr_tf = world.player.get_transform()
+        print(f"[POSICAO REAL] X: {curr_tf.location.x:.2f} | Y: {curr_tf.location.y:.2f} | Z: {curr_tf.location.z:.2f}", flush=True)
+        print(f"[ORIENTACAO REAL] Pitch: {curr_tf.rotation.pitch:.1f}° | Yaw: {curr_tf.rotation.yaw:.1f}° | Roll: {curr_tf.rotation.roll:.1f}°", flush=True)
+
+        if abs(curr_tf.rotation.roll) > 20.0:
+            print("[-] ALERTA: Veículo capotou. Aumente safe_z.", flush=True)
+        else:
+            print("[+] Veículo em pé sobre as 4 rodas. Inicializando PCLA...", flush=True)
+        
+        # initializing the vehicle only after its stabilization
+        pcla = PCLA(agent, world.player, route, client)
+
+        # WARM-UP: Ticks para preencher os buffers de sensores do PCLA e estabilizar o UKF
+        print("[+] Aquecendo sensores e filtros do PCLA...", flush=True)
+        for _ in range(15):
+            if args.sync:
+                sim_world.tick()
+            else:
+                sim_world.wait_for_tick()
+
+        clock = pygame.time.Clock()
+
+        while True:
+
+            if args.sync:
+                sim_world.tick()
+
             clock.tick_busy_loop(60)
+
             if controller.parse_events(client, world, clock, args.sync, can_bus):
-                return
+                break # to ensure that the execution will go through the code under "finally"
+
+            # sending the Agent commands to the CAN bus
+            ego_action = pcla.get_action()
+            print(f"[PCLA CONTROL] Throttle: {ego_action.throttle:.2f} | Steer: {ego_action.steer:.2f} | Brake: {ego_action.brake:.2f} | Hand Brake: {ego_action.hand_brake}", flush=True)
+            world.can_net.send_msg(ego_action)
+            received_controls = world.can_net.recv_msg()
+            print(f"[PCLA RAW] T: {ego_action.throttle:.2f} | S: {ego_action.steer:.2f} | B: {ego_action.brake:.2f}", flush=True)
+            print(f"[CAN RECV] T: {received_controls.throttle:.2f} | S: {received_controls.steer:.2f} | B: {received_controls.brake:.2f}", flush=True)
+            world.player.apply_control(received_controls)
+                
             world.tick(clock)
             world.render(display)
             can_display.render(display)
@@ -119,18 +228,14 @@ def game_loop(args):
             pygame.display.flip()
 
 
-            '''
-            # taking the last numpy array from the image queue and sending it to the AI pipeline's function in charge of processing it
-            ai_throttle, ai_brake = throttle_or_brake(world.rgb_camera_sensor.imgqueue.get())
-            #ai_throttle = throttle_or_brake(world.rgb_camera_sensor.imgqueue.get())
-
-            # sending the throttle and the brake values to the class that will send it through the CAN network
-            ai_controller = ai_control(ai_throttle, ai_brake)
-            can_bus.send_throttle_msg(ai_controller)
-            can_bus.send_brake_msg(ai_controller)
-            '''
-
     finally:
+
+        if pcla is not None:
+            try:
+                pcla.cleanup() # cleanup when done
+            except Exception:
+                pass
+
         # Stop CARLA sensor streams first so the server can close sessions cleanly
         # before any other teardown that might talk to the server or tear down the
         # CAN interface.

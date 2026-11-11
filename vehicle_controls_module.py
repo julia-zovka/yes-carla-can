@@ -41,7 +41,7 @@ except ImportError:
 class KeyboardSenderControl(object):
     """Class that handles keyboard input and periodic CAN message sending."""
 
-    def __init__(self, can_net, start_in_autopilot=False):
+    def __init__(self, can_net, start_in_autopilot=False): #mudando de =False para =True e vendo se há alguma diferenca de comportamentp
         self._autopilot_enabled = start_in_autopilot
         self._ackermann_enabled = False
         self._ackermann_reverse = 1

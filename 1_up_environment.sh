@@ -121,10 +121,10 @@ sleep 5
 
 # Executar os módulos Python no Host com sudo -E (Acesso a vcan0 + veth-s Socket RAW + localhost)
 echo "Starting CARLA client module..."
-sudo "${PYTHON_EXEC}" "${SCRIPT_DIR}/CARLA_client_module.py" --vcan "${VCAN_INTERFACE}" &
+sudo "${PYTHON_EXEC}" "${SCRIPT_DIR}/CARLA_client_module.py" --vcan "${VCAN_INTERFACE}" --sync 
 
-echo "Starting vehicle controls module..."
-sudo "${PYTHON_EXEC}" "${SCRIPT_DIR}/vehicle_controls_module.py" --dbc "${DBC_PATH}" --vcan "${VCAN_INTERFACE}" &
+# echosudo "Starting vehicle controls module..."
+# sudo "${PYTHON_EXEC}" "${SCRIPT_DIR}/vehicle_controls_module.py" --dbc "${DBC_PATH}" --vcan "${VCAN_INTERFACE}" &
 
 echo "Environment is up!"
 
