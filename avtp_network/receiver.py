@@ -14,15 +14,18 @@ Options
 from __future__ import annotations
 
 import argparse
+import queue
 import signal
+import struct
+import threading
 import time
-import subprocess  
+import subprocess
 from pathlib import Path
 import socket
 import sys
 from datetime import datetime
 
-from avtp_network.avtp import parse_mpegts_stream_packet
+from avtp_network.avtp import parse_mpegts_stream_packet, splice_ts_payload
 from corruption import CorruptionTester, CorruptionMode
 
 
@@ -38,12 +41,29 @@ def parse_args():
     
     # ── Robustness / fault-injection test (local, no network attack) ──────────
     parser.add_argument("--corrupt-test", action="store_true",
-                         help="Ativa o teste de robustez: corrompe deliberadamente blocos TS "
-                              "já recebidos, no próprio pipeline local, para medir o efeito no ffplay.")
-    parser.add_argument("--corrupt-period", type=int, default=5,
-                         help="A cada N blocos TS recebidos, corrompe 1 (default: 5, alinhado ao GOP do encoder).")
+                         help="Ativa o teste de robustez: corrompe deliberadamente pacotes "
+                              "já recebidos, no próprio pipeline local, para medir o efeito no ffplay. "
+                              "Detecta o I-frame pela rajada de pacotes AVTP (ver --corrupt-iframe-threshold).")
+    parser.add_argument("--corrupt-iframe-threshold", type=int, default=150,
+                         help="Nº de pacotes AVTP na rajada atual a partir do qual ela é classificada "
+                              "como I-frame (default: 150 — calibrado entre P-frames ~19-93 pkts e "
+                              "I-frames ~250-300+ pkts observados no TX).")
+    parser.add_argument("--corrupt-gap-ms", type=float, default=4.0,
+                         help="Gap (ms) entre pacotes que sinaliza início de nova rajada/frame (default: 4.0).")
+    parser.add_argument("--corrupt-partial", action="store_true",
+                         help="Corrompe só o pacote que cruzou o limiar, em vez da rajada inteira a partir dali.")
     parser.add_argument("--corrupt-mode", choices=[m.value for m in CorruptionMode], default="syncbyte",
                          help="Tipo de corrupção aplicada: syncbyte | zero | bitflip (default: syncbyte).")
+
+    # ── Alimentação do autopilot baseado em câmera (processo separado) ────────
+    parser.add_argument("--cam-autopilot-socket", default=None,
+                         help="Caminho de um socket Unix (ex: /tmp/yes_carla_can_cam.sock) onde o "
+                              "camera_autopilot.py está escutando. Se passado, cada PACOTE AVTP "
+                              "BRUTO (já com a corrupção de teste regravada nele, se --corrupt-test "
+                              "estiver ativo) é encaminhado por lá, framed, em paralelo ao "
+                              "ffplay/arquivo — o desempacotamento MPEG-TS é feito do outro lado, "
+                              "pelo próprio camera_autopilot.py, não aqui. Se omitido, nada muda no "
+                              "comportamento atual do receiver.")
     return parser.parse_args()
 
 
@@ -56,7 +76,7 @@ class ReceiverState:
     Acumula os blocos MPEG-TS recebidos -> jitter buffer-> envia pro ffplay e pro discom arquivo de vídeo (.ts).
     """
 
-    def __init__(self, output_dir: Path | None = None, output_filename: str = "output_stream.ts", corruption_tester: CorruptionTester | None = None):
+    def __init__(self, output_dir: Path | None = None, output_filename: str = "output_stream.ts", corruption_tester: CorruptionTester | None = None, cam_autopilot_socket: str | None = None):
         self.packets_received = 0
         self.bytes_received = 0
         self.start_time = time.time()
@@ -70,7 +90,7 @@ class ReceiverState:
         #IEC 61883-4 Annex A De-Jitter Buffer (3264 bytes)---> reduzido para baixar a latencia na veth
         self.jitter_buffer = bytearray()
         self.is_buffered = False
-        self.JITTER_BUFFER_SIZE = 3264 
+        self.JITTER_BUFFER_SIZE = 200000 
         
         self.out_file = None
         if output_dir:
@@ -84,8 +104,10 @@ class ReceiverState:
         # Comando ffplay lendo diretamente da entrada padrão (pipe:0)
         ffplay_cmd = [
             "ffplay",
+            "-hide_banner",                 # Remove o banner de versão/build do ffmpeg
+            "-loglevel", "error",           # Suprime warnings de probe inicial (ex: "decoding for stream 0 failed"), mantém erros reais
             "-window_title", "AVTP Live Stream (FFplay)",
-            "-probesize", "150000",         # Aumentado para 150KB para ler SPS/PPS sem erro de rate
+            "-probesize", "250000",         # Aumentado para 150KB para ler SPS/PPS sem erro de rate
             "-analyzeduration", "500000",   # 0.5 segundo de análise para garantir sincronismo            
             "-fflags", "nobuffer+fastseek", # Minimiza o atraso (buffering) do vídeo ao vivo
             "-flags", "low_delay",          # Força decodificação de baixa latência
@@ -110,6 +132,95 @@ class ReceiverState:
             _, err = self.ffplay_proc.communicate()
             print("\n  [!] ERRO ao iniciar o ffplay:")
             print(err.decode("utf-8", errors="replace"))
+
+        # ── Writer desacoplado ──────────────────────────────────────────────
+        # Toda escrita no stdin do ffplay passa por esta fila, consumida por
+        # UMA thread dedicada. Isso impede que um write() bloqueante (ex: o
+        # primeiro flush grande do jitter_buffer, ou qualquer engasgo do
+        # ffplay) trave o laço principal de recvfrom() e cause perda real de
+        # pacotes AVTP na rede.
+        self.write_queue: queue.Queue[bytes | None] = queue.Queue()
+        self.writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
+        self.writer_thread.start()
+
+        # ── Encaminhamento pro camera_autopilot.py (opcional) ────────────────
+        # Mesmo padrão de desacoplamento do writer do ffplay: o laço principal
+        # nunca fala direto com o socket (que pode estar lento, ou o processo
+        # do outro lado nem estar de pé ainda) — só enfileira, com uma fila
+        # LIMITADA (maxsize) para que, se o consumidor atrasar, a gente
+        # descarte frame de vídeo em vez de travar a recepção AVTP real.
+        self.cam_queue: queue.Queue[bytes | None] | None = None
+        self.cam_thread: threading.Thread | None = None
+        if cam_autopilot_socket:
+            self.cam_queue = queue.Queue(maxsize=300)
+            self.cam_thread = threading.Thread(
+                target=self._cam_feed_loop, args=(cam_autopilot_socket,), daemon=True
+            )
+            self.cam_thread.start()
+
+    def _writer_loop(self):
+        """Roda em thread separada: consome a fila e escreve no stdin do ffplay."""
+        while True:
+            chunk = self.write_queue.get()
+            if chunk is None:  # sentinela de encerramento
+                break
+            try:
+                if self.ffplay_proc and self.ffplay_proc.poll() is None:
+                    self.ffplay_proc.stdin.write(chunk)
+                    self.ffplay_proc.stdin.flush()
+            except (BrokenPipeError, OSError):
+                pass
+
+    def _cam_feed_loop(self, socket_path: str):
+        """
+        Roda em thread separada: conecta (com retry) no socket Unix do
+        camera_autopilot.py como CLIENTE e repassa cada PACOTE AVTP BRUTO
+        enfileirado (corrompido ou não — ver handle_packet). Reconecta
+        automaticamente se o outro processo cair ou ainda não tiver subido
+        — nunca derruba o receiver por isso.
+
+        Cada pacote é enviado com um framing simples de 4 bytes de tamanho
+        (big-endian) + o pacote em si: diferente de antes (quando se
+        mandava um stream MPEG-TS contínuo, sem fronteiras), agora cada
+        bloco enfileirado é um pacote AVTP bruto discreto, e o outro lado
+        (camera_autopilot.py) precisa separar um do próximo pra poder
+        desempacotar cada um individualmente.
+
+        Um socket Unix funciona entre os dois namespaces de rede (receiver.py
+        roda dentro do netns "receiver") porque namespace de REDE não isola
+        o filesystem — só interfaces/sockets de rede. O arquivo do socket
+        Unix fica visível dos dois lados normalmente.
+        """
+        conn: socket.socket | None = None
+        while True:
+            if conn is None:
+                try:
+                    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    conn.connect(socket_path)
+                    print(f"  [i] Conectado ao camera_autopilot.py em {socket_path}")
+                except OSError:
+                    conn = None
+                    time.sleep(1.0)
+                    continue
+
+            chunk = self.cam_queue.get()
+            if chunk is None:  # sentinela de encerramento
+                break
+            try:
+                framed = struct.pack("!I", len(chunk)) + chunk
+                conn.sendall(framed)
+            except OSError:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                conn = None  # tenta reconectar na próxima iteração
+
+        if conn is not None:
+            try:
+                conn.close()
+            except OSError:
+                pass
 
 
     def handle_packet(self, raw_pkt: bytes):
@@ -139,33 +250,39 @@ class ReceiverState:
         self.packets_received += 1
         self.bytes_received += len(ts_data)
 
-         # 4.5 Harness de teste de robustez: corrompe deliberadamente este
-        #     bloco (já recebido, local) a cada N blocos, para medir o
-        #     efeito no decoder do ffplay sem envolver a rede.
-        if self.corruption_tester is not None:
-            ts_data, _was_corrupted = self.corruption_tester.maybe_corrupt(ts_data)
-
+        # 4.5 Harness de teste de robustez: corrompe deliberadamente este
+        #     bloco (já extraído, local) e REGRAVA a corrupção de volta no
+        #     pacote bruto, no mesmo offset de onde veio (splice_ts_payload).
         
+        forward_pkt = raw_pkt
+        if self.corruption_tester is not None:
+            corrupted_ts, was_corrupted = self.corruption_tester.maybe_corrupt(ts_data)
+            if was_corrupted:
+                forward_pkt = splice_ts_payload(raw_pkt, corrupted_ts)
+                ts_data = corrupted_ts  # ffplay/.ts locais também refletem o ataque
 
         # Gravação em disco se a opção --output-dir for usada
         if self.out_file:
             self.out_file.write(ts_data)
 
-        # Envio para o ffplay via PIPE (stdin)
-        if self.ffplay_proc and self.ffplay_proc.poll() is None:
+        # Encaminha o PACOTE BRUTO (corrompido ou não) pro camera_autopilot.py,
+        if self.cam_queue is not None:
             try:
-                if not self.is_buffered:
-                    self.jitter_buffer.extend(ts_data)
-                    if len(self.jitter_buffer) >= self.JITTER_BUFFER_SIZE:
-                        self.ffplay_proc.stdin.write(self.jitter_buffer)
-                        self.ffplay_proc.stdin.flush()
-                        self.is_buffered = True
-                        self.jitter_buffer.clear()
-                else:
-                    self.ffplay_proc.stdin.write(ts_data)
-                    self.ffplay_proc.stdin.flush()
-            except (BrokenPipeError, OSError):
+                self.cam_queue.put_nowait(forward_pkt)
+            except queue.Full:
                 pass
+
+        # Envio para o ffplay: apenas ENFILEIRA (não bloqueia este laço).
+        # A escrita real no stdin acontece na writer_thread, em paralelo.
+        if self.ffplay_proc and self.ffplay_proc.poll() is None:
+            if not self.is_buffered:
+                self.jitter_buffer.extend(ts_data)
+                if len(self.jitter_buffer) >= self.JITTER_BUFFER_SIZE:
+                    self.write_queue.put(bytes(self.jitter_buffer))
+                    self.is_buffered = True
+                    self.jitter_buffer.clear()
+            else:
+                self.write_queue.put(ts_data)
 
         # Log a cada 100 pacotes válidos recebidos
         if self.packets_received % 100 == 0:
@@ -179,7 +296,17 @@ class ReceiverState:
             )
             
     def close(self):
-        """Fecha o arquivo ao encerrar o script."""
+        """Fecha o arquivo, a writer_thread e o ffplay ao encerrar o script."""
+        # Sinaliza a writer_thread para parar e espera ela drenar/terminar
+        if hasattr(self, "write_queue"):
+            self.write_queue.put(None)
+        if hasattr(self, "writer_thread"):
+            self.writer_thread.join(timeout=2)
+        if self.cam_queue is not None:
+            self.cam_queue.put(None)
+        if self.cam_thread is not None:
+            self.cam_thread.join(timeout=2)
+
         if self.out_file:
             self.out_file.close()
 
@@ -205,12 +332,18 @@ def run(args):
     corruption_tester = None
     if args.corrupt_test:
         corruption_tester = CorruptionTester(
-            period=args.corrupt_period,
+            gap_threshold=args.corrupt_gap_ms / 1000.0,
+            iframe_pkt_threshold=args.corrupt_iframe_threshold,
+            corrupt_whole_burst=not args.corrupt_partial,
             mode=CorruptionMode(args.corrupt_mode),
             enabled=True,
         )
 
-    state = ReceiverState(output_dir=output_dir, corruption_tester=corruption_tester)
+    state = ReceiverState(
+        output_dir=output_dir,
+        corruption_tester=corruption_tester,
+        cam_autopilot_socket=args.cam_autopilot_socket,
+    )
 
     print("=" * 65)
     print("  AVTP Video Receiver (MPEG-TS Stream)")
@@ -220,7 +353,10 @@ def run(args):
     print(f"  Timeout   : {args.timeout or 'none'}")
     if corruption_tester:
             print(f"  [TESTE DE ROBUSTEZ ATIVO] modo={corruption_tester.mode.value} "
-                  f"período={corruption_tester.period}")
+                  f"limiar_iframe={corruption_tester.iframe_pkt_threshold}pkts "
+                  f"gap={args.corrupt_gap_ms}ms")
+    if args.cam_autopilot_socket:
+        print(f"  [CAMERA AUTOPILOT] Encaminhando frames para: {args.cam_autopilot_socket}")
     print("=" * 65)
     print()
 

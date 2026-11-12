@@ -129,41 +129,86 @@ def fragment_mpegts_stream(
 ## receiver
 
 
+def locate_ts_payload(raw_pkt: bytes) -> Optional[tuple[int, int]]:
+    """
+    Localiza o offset do primeiro Sync Byte (0x47) do payload MPEG-TS
+    dentro do pacote bruto e o tamanho de bloco correspondente (com ou sem
+    os 4 bytes de SPH), testando os mesmos alinhamentos de fallback que
+    parse_mpegts_stream_packet usa. Retorna (offset, block_size) ou None
+    se não achar o sync byte em nenhum alinhamento esperado.
+
+    Separado de parse_mpegts_stream_packet para que quem só precisa saber
+    ONDE o payload TS está dentro do pacote bruto — por exemplo, pra
+    regravar bytes corrompidos de volta no mesmo lugar, sem reconstruir o
+    pacote do zero — não precise duplicar essa lógica de alinhamento.
+    """
+    HEADER_OFFSET = 50       # 14 Ethernet + 24 AVTP + 8 CIP + 4 SPH
+    BLOCK_SIZE = 192          # 4B SPH + 188B TS
+
+    if not isinstance(raw_pkt, bytes) or len(raw_pkt) < (HEADER_OFFSET + 188):
+        return None
+
+    if raw_pkt[HEADER_OFFSET] == 0x47:
+        return HEADER_OFFSET, BLOCK_SIZE
+
+    # Fallback de segurança para o caso de algum pacote sem o CIP (38) ou sem o SPH (46)
+    if raw_pkt[38] == 0x47:
+        return 38, 188
+    if raw_pkt[42] == 0x47:
+        return 42, 192
+    if raw_pkt[46] == 0x47:
+        return 46, 188
+
+    return None  # Não encontrou o byte de sincronismo 0x47 no alinhamento esperado
+
+
 def parse_mpegts_stream_packet(raw_pkt: bytes) -> Optional[bytes]:
     """
     Extrai blocos MPEG-TS de 188 bytes a partir do cabeçalho completo:
     Ethernet (14B) + AVTP (24B) + CIP (8B) + SPH (4B) = 50B até o Sync Byte 0x47.
     """
-    HEADER_OFFSET = 50       # 14 + 24 + 8 + 4
-    BLOCK_SIZE = 192          # 4B SPH + 188B TS
-
-    # Validação mínima: 50B de cabeçalho + 188B do primeiro pacote TS
-    if not isinstance(raw_pkt, bytes) or len(raw_pkt) < (HEADER_OFFSET + 188):
+    located = locate_ts_payload(raw_pkt)
+    if located is None:
         return None
-
-    payload_len = len(raw_pkt)
-
-    # Checagem direta no offset 50
-    if raw_pkt[HEADER_OFFSET] != 0x47:
-        # Fallback de segurança para o caso de algum pacote sem o CIP (38) ou sem o SPH (46)
-        if raw_pkt[38] == 0x47:
-            HEADER_OFFSET = 38
-            BLOCK_SIZE = 188
-        elif raw_pkt[42] == 0x47:
-            HEADER_OFFSET = 42
-            BLOCK_SIZE = 192
-        elif raw_pkt[46] == 0x47:
-            HEADER_OFFSET = 46
-            BLOCK_SIZE = 188
-        else:
-            return None  # Não encontrou o byte de sincronismo 0x47 no alinhamento esperado
+    header_offset, block_size = located
 
     extracted_ts = bytearray()
-
-    # Pega o primeiro bloco no offset 50 e pula de 192 em 192 se houver múltiplos blocos no pacote
-    for i in range(HEADER_OFFSET, payload_len, BLOCK_SIZE):
+    # Pega o primeiro bloco no offset localizado e pula de block_size em
+    # block_size se houver múltiplos blocos no pacote.
+    for i in range(header_offset, len(raw_pkt), block_size):
         ts_pkt = raw_pkt[i : i + 188]
         if len(ts_pkt) == 188 and ts_pkt[0] == 0x47:
             extracted_ts.extend(ts_pkt)
 
     return bytes(extracted_ts) if extracted_ts else None
+
+
+def splice_ts_payload(raw_pkt: bytes, ts_data: bytes) -> bytes:
+    """
+    Regrava os blocos TS de 188 bytes dentro de uma CÓPIA do pacote bruto
+    com os bytes de ts_data — usada pelo receiver.py para gravar de volta,
+    no mesmo pacote de onde veio, uma corrupção aplicada sobre o ts_data já
+    extraído por parse_mpegts_stream_packet(raw_pkt). ts_data deve ter o
+    mesmo tamanho/mesma contagem de blocos de 188B que parse_mpegts_stream_
+    packet(raw_pkt) retornaria; qualquer sobra de ts_data além dos blocos
+    que cabem no pacote original é ignorada.
+
+    Sem isso, "corromper" só alteraria uma cópia solta dos bytes TS — o
+    pacote de fato encaminhado adiante continuaria limpo. Com isso, o que
+    segue adiante (local e pela rede/socket) é o mesmo pacote que um
+    atacante real teria adulterado, byte a byte, no lugar certo.
+    """
+    located = locate_ts_payload(raw_pkt)
+    if located is None:
+        return raw_pkt
+    header_offset, block_size = located
+
+    out = bytearray(raw_pkt)
+    pos = 0
+    for i in range(header_offset, len(raw_pkt), block_size):
+        if pos + 188 > len(ts_data):
+            break
+        out[i : i + 188] = ts_data[pos : pos + 188]
+        pos += 188
+
+    return bytes(out)
