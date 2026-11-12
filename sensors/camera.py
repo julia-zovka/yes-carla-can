@@ -280,17 +280,6 @@ class RGBCameraSensor(object):
             # Pega os 3 canais e inverte BGR para RGB (::-1)
             rgb_array = array[:, :, :3][:, :, ::-1]
             self.array = rgb_array
-            try:
-                # 1. Cria a superfície no tamanho original (960x400)
-                full_surface = pygame.surfarray.make_surface(rgb_array.swapaxes(0, 1))
-                
-                # 2. Redimensiona apenas para a tela do Pygame (470x200)
-                self.surface = pygame.transform.scale(
-                    full_surface, 
-                    (self.DISPLAY_WIDTH, self.DISPLAY_HEIGHT)
-                )
-            except Exception:
-                pass
 
 
         # Codifica para o Padrão MPEG-TS ISO/IEC 13818-1 (Blocos de 192 Bytes)
