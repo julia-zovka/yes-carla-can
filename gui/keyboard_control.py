@@ -29,6 +29,7 @@ try:
         K_f,
         K_g,
         K_h,
+        K_k,  #autopilot camera
         K_m,  #cameraaa
         K_n,
         K_p,
@@ -51,6 +52,7 @@ class KeyboardControl(object):
         self._autopilot_enabled = start_in_autopilot
         self._ackermann_enabled = False
         self._ackermann_reverse = 1
+        self._camera_autopilot_enabled = False
 
         if isinstance(world.player, carla.Vehicle):
             self._control = carla.VehicleControl()
@@ -207,6 +209,22 @@ class KeyboardControl(object):
                         world.hud.notification(
                             "Autopilot %s"
                             % ("On" if self._autopilot_enabled else "Off")
+                        )
+                    elif event.key == K_k:
+                        # Autopilot baseado em câmera (camera_autopilot.py,
+                        # processo separado que decide com base na imagem
+                        # recebida via AVTP). Avisa esse processo pelo CAN
+                        # (CAM_AUTOPILOT_ENABLE) e garante que o Traffic
+                        # Manager nativo não disputa o controle do veículo
+                        # ao mesmo tempo.
+                        self._camera_autopilot_enabled = not self._camera_autopilot_enabled
+                        if self._camera_autopilot_enabled and self._autopilot_enabled:
+                            self._autopilot_enabled = False
+                            world.player.set_autopilot(False)
+                        self._can.send_cam_autopilot_enable_msg(self._camera_autopilot_enabled)
+                        world.hud.notification(
+                            "Camera Autopilot %s"
+                            % ("On" if self._camera_autopilot_enabled else "Off")
                         )
 
         if not self._autopilot_enabled:

@@ -185,3 +185,4 @@ candump*
 *.pcap
 
 output_stream*
+camera_autopilot.log

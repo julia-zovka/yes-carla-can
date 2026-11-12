@@ -39,6 +39,16 @@ else
     echo "vehicle_controls_module process not found."
 fi
 
+# Stop camera-based autopilot. Lançado via "sudo -E ... &" 
+echo "Stopping camera-based autopilot..."
+CAM_AUTOPILOT_PID=$(pgrep -d ' ' -f "camera_autopilot.py")
+if [ -n "$CAM_AUTOPILOT_PID" ]; then
+    sudo kill $CAM_AUTOPILOT_PID 2>/dev/null || true
+    echo "camera_autopilot (PID $CAM_AUTOPILOT_PID) stopped."
+else
+    echo "camera_autopilot process not found."
+fi
+
 # Stop CARLA client module and wait for it to exit so sensor streams are
 # cleanly closed before the CARLA server is killed.
 echo "Stopping CARLA client module..."

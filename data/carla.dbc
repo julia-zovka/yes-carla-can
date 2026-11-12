@@ -102,6 +102,9 @@ BO_ 1556 RADAR_TARGET: 8 ECU
  SG_ RADAR_ALT_signal : 32|16@1- (0.01,0) [-327.68|327.67] "deg"  ECU
  SG_ RADAR_DEPTH_signal : 48|16@1+ (0.01,0) [0|655.35] "m"  ECU
 
+BO_ 1557 CAM_AUTOPILOT_ENABLE: 1 ECU
+ SG_ CAM_AUTOPILOT_ENABLE_signal : 0|8@1+ (1,0) [0|255] ""  ECU
+ 
 BA_DEF_ BO_ "GenMsgCycleTime" INT 0 10000;
 
 BA_DEF_DEF_ "GenMsgCycleTime" 0;

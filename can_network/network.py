@@ -21,6 +21,15 @@ class CAN_Network(object):
         self.recvd_controls = carla.VehicleControl()
         self.db, self.cycle_times = load_and_validate(dbc_path)
 
+        # Estado do autopilot baseado em câmera (camera_autopilot.py) e do
+        # sensor de colisão, lidos por quem chamar recv_msg() — tanto o
+        # CARLA_client_module.py (pra saber se deve desligar o Traffic
+        # Manager) quanto o próprio camera_autopilot.py (pra saber se deve
+        # estar ativo e se acabou de bater em algo).
+        self.cam_autopilot_enabled = False
+        self.last_collision_intensity = 0.0
+        self.collision_event_count = 0
+
     # ------------------------------------------------------------------
     # Internal helper
     # ------------------------------------------------------------------
@@ -102,6 +111,9 @@ class CAN_Network(object):
         # controls.autopilot is not a standard VehicleControl field;
         # adapt the value source here if you have an autopilot state elsewhere.
         pass
+
+    def send_cam_autopilot_enable_msg(self, enabled):
+        self.bus.send(self._build_msg("CAM_AUTOPILOT_ENABLE", int(bool(enabled))))
 
     # ------------------------------------------------------------------
     # Sensor senders
@@ -250,8 +262,21 @@ class CAN_Network(object):
                         lights_int |= flag
                 self.current_lights = carla.VehicleLightState(lights_int)
 
+            elif name == "CAM_AUTOPILOT_ENABLE":
+                self.cam_autopilot_enabled = bool(data["CAM_AUTOPILOT_ENABLE_signal"])
+
+            elif name == "COLLISION":
+                # Publicado pelo CollisionSensor nativo (sensors/collision.py) a
+                # cada impacto real. Guardamos intensidade + um contador que
+                # incrementa a cada evento, pra quem estiver fazendo polling
+                # (camera_autopilot.py) detectar "colisão nova desde a última
+                # checagem" comparando esse contador, sem perder eventos entre
+                # chamadas de recv_msg().
+                self.last_collision_intensity = data["COLLISION_INTENSITY_signal"]
+                self.collision_event_count += 1
+
             elif name in SENSOR_MESSAGES:
-                pass  # sensor telemetry — published by the CARLA client; no actuation here
+                pass  # demais telemetrias — publicadas pelo CARLA client; sem atuação aqui
 
             try:
                 recv_msg = self.bus.recv(timeout=0)

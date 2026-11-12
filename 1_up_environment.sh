@@ -7,6 +7,7 @@ DBC_PATH="${DBC_PATH:-data/carla.dbc}"
 VCAN_INTERFACE="${VCAN_INTERFACE:-vcan0}"
 MAP="${MAP:-}"
 AVTP_DIR="${SCRIPT_DIR}/avtp_network"
+CAM_AUTOPILOT_SOCKET="${CAM_AUTOPILOT_SOCKET:-/tmp/yes_carla_can_cam.sock}"
 
 usage() {
     cat <<EOF
@@ -55,6 +56,17 @@ done
 # Exporta o diretório do projeto para o PYTHONPATH (preservado pelo sudo -E)---- para evitar problemas com importaco de modulos
 export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}"
 
+# Desativa o backend de áudio do SDL (usado pelo pygame no CARLA_client_module.py).
+# O cliente só usa pygame para exibir a janela/câmera, nunca toca som — mas
+# pygame.init() tenta abrir um dispositivo de áudio por padrão. Rodando como
+# root (sudo), isso falha ao tentar falar com o PulseAudio do usuário normal
+# (erro de XDG_RUNTIME_DIR) e cai para ALSA, que por sua vez gera warnings de
+# "underrun" repetidos. SDL_AUDIODRIVER=dummy evita que o SDL sequer tente
+# abrir um dispositivo de áudio real, eliminando os dois avisos na raiz.
+# Exportado aqui (preservado por "sudo -E") para cobrir todos os processos
+# Python chamados abaixo.
+export SDL_AUDIODRIVER=dummy
+
 # Resolve Conda Python binary dynamically (no hardcoded user paths)
 if [[ -n "${CONDA_PREFIX}" && "${CONDA_DEFAULT_ENV}" == "${CONDA_ENV_NAME}" ]]; then
     PYTHON_EXEC="${CONDA_PREFIX}/bin/python"
@@ -89,7 +101,10 @@ fi
 
 # Start CARLA simulator in the background
 echo "Starting CARLA simulator..."
-./${CARLA_FOLDER_NAME}/CarlaUE4.sh -RenderOffScreen -quality-level=Low -nosound 2>/dev/null &
+# "< /dev/null": builds do Unreal Engine costumam ter uma thread de console
+# que lê stdin pra aceitar comandos remotos, mesmo headless. Sem isso, em
+# background, ele ficaria disputando a entrada do terminal.
+./${CARLA_FOLDER_NAME}/CarlaUE4.sh -RenderOffScreen -quality-level=Low -nosound < /dev/null &
 
 echo "Setting up AVTP virtual network..."
 sudo bash "${AVTP_DIR}/setup.sh" --capture
@@ -98,11 +113,9 @@ sudo bash "${AVTP_DIR}/setup.sh" --capture
 echo "Exposing AVTP sender interface to Host..."
 sudo ip netns exec sender ip link set veth-s netns 1
 sleep 1
-sudo ip link set dev veth-s up 
+sudo ip link set dev veth-s up
 
 
-
-# Set up virtual CAN bus
 echo "Setting up virtual CAN bus..."
 sudo modprobe vcan
 sudo modprobe can-gw
@@ -113,16 +126,34 @@ sudo ip link set up "${VCAN_INTERFACE}" 2>/dev/null || true
 # Frames sent on vcan1 are forwarded to vcan0 and marked 'R' (received) by candump,
 # while frames sent directly on vcan0 are marked 'T' (transmitted).
 echo "Setting up attacker CAN bus and can-gw bridge..."
-sudo ip link add dev vcan1 type vcan
-sudo ip link set up vcan1
+sudo ip link add dev vcan1 type vcan 2>/dev/null || true
+sudo ip link set up vcan1 2>/dev/null || true
 sudo cangw -A -s vcan1 -d "${VCAN_INTERFACE}" -e 2>/dev/null || true
 sudo cangw -A -s "${VCAN_INTERFACE}" -d vcan1 -e 2>/dev/null || true
 
 
 
-# Give CARLA a moment to initialise before connecting clients
+
+# Give CARLA a moment to initialise before connecting clients.
 echo "Waiting for CARLA to start..."
-sleep 5
+CARLA_READY=false
+for i in $(seq 1 60); do
+    if (exec 3<>"/dev/tcp/127.0.0.1/2000") 2>/dev/null; then
+        exec 3>&- 3<&-
+        CARLA_READY=true
+        break
+    fi
+    sleep 1
+done
+if [[ "${CARLA_READY}" == "true" ]]; then
+    echo "  [i] CARLA respondendo na porta 2000 (demorou ~${i}s pra subir)."
+else
+    echo "  [!] CARLA não respondeu na porta 2000 depois de 60s — seguindo"
+    echo "      mesmo assim, mas pode ser preciso investigar o log do CarlaUE4.sh."
+fi
+# Mesmo com a porta já respondendo, dá uma folga extra pro UE4 terminar
+# qualquer inicialização de janela/input que ainda esteja em andamento.
+sleep 3
 
 # Executa os módulos Python no Host com privilégios para o Scapy
 echo "Starting CARLA client module..."
@@ -141,10 +172,12 @@ echo ""
 echo "   xhost +local:sudo "
 echo ""
 echo ""
-echo "   sudo -E DISPLAY=\$DISPLAY PYTHONPATH=. ip netns exec receiver \"\$CONDA_PREFIX/bin/python\" avtp_network/receiver.py -i veth-r -o ."
+echo "   sudo -E DISPLAY=\$DISPLAY PYTHONPATH=. ip netns exec receiver \"\$CONDA_PREFIX/bin/python\" avtp_network/receiver.py -i veth-r -o . --cam-autopilot-socket ${CAM_AUTOPILOT_SOCKET}"
 echo ""
 echo "======================================================================"
-read -p "Pressione [ENTER] AQUI após iniciar o receiver para subir os clientes do CARLA..."
+
+read -p "Pressione [ENTER] AQUI após iniciar o receiver para subir os clientes do CARLA..." < /dev/tty
+
 
 # Executar os módulos Python no Host
 echo "Starting CARLA client module..."
@@ -152,5 +185,12 @@ sudo -E "${PYTHON_EXEC}" "${SCRIPT_DIR}/CARLA_client_module.py" "${CLIENT_ARGS[@
 
 echo "Starting vehicle controls module..."
 sudo "${PYTHON_EXEC}" "${SCRIPT_DIR}/vehicle_controls_module.py" --dbc "${DBC_PATH}" --vcan "${VCAN_INTERFACE}" &
+
+echo "Starting camera-based autopilot (desligado até a tecla 'K')..."
+CAM_AUTOPILOT_LOG="${SCRIPT_DIR}/camera_autopilot.log"
+echo "  [i] Log do camera_autopilot em: ${CAM_AUTOPILOT_LOG}"
+sudo -E "${PYTHON_EXEC}" -u "${SCRIPT_DIR}/camera_autopilot.py" --show-debug\
+    --socket "${CAM_AUTOPILOT_SOCKET}" --dbc "${DBC_PATH}" --vcan "${VCAN_INTERFACE}" \
+    < /dev/null > "${CAM_AUTOPILOT_LOG}" 2>&1 &
 
 echo "Environment is completely up!"

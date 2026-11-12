@@ -16,6 +16,7 @@ MESSAGES = {
     "AUTOPILOT":           (None,                         "send_autopilot_msg",           False),
     "DOORS":               ("DOORS_signal",               "send_switch_door_state_msg",  False),
     "GENERAL_LIGHTS":      (None,                         "send_current_lights_msg",     False),
+    "CAM_AUTOPILOT_ENABLE": ("CAM_AUTOPILOT_ENABLE_signal", "send_cam_autopilot_enable_msg", False),
 }
 
 # Ordered mapping of DBC signal name → carla.VehicleLightState integer flag value.

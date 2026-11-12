@@ -139,6 +139,11 @@ class KeyboardSenderControl(object):
             self._ackermann_control.steer = round(self._steer_cache, 1)
 
     def parse_events(self, clock, can_network):
+        # Drena a fila CAN pra manter can_network.cam_autopilot_enabled em
+        # dia — é a mesma leitura que o keyboard_control.py já faz do lado
+        # do CARLA_client_module.py
+        can_network.recv_msg()
+
         current_lights = self._lights
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -205,8 +210,19 @@ class KeyboardSenderControl(object):
             can_network.send_current_lights_msg(current_lights)
             self._lights = current_lights
 
-        # Periodic: send each message according to its DBC cycle time
-        self._send_periodic_messages()
+        # Enquanto o camera_autopilot.py estiver ativo (ligado pela tecla
+        # 'K' em keyboard_control.py, que manda CAM_AUTOPILOT_ENABLE por
+        # CAN), este processo PARA de mandar THROTTLE/STEER/BRAKE/REVERSE.
+       
+        if not can_network.cam_autopilot_enabled:
+            self._send_periodic_messages()
+        else:
+            # Mantém os timers "frescos" (sem acumular atraso) pra não
+            # disparar uma rajada de envios represados assim que o
+            # camera_autopilot for desligado de novo.
+            now = time.time()
+            for msg_name in self._msg_timers:
+                self._msg_timers[msg_name][1] = now
 
     @staticmethod
     def _is_quit_shortcut(key):
